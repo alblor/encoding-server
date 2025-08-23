@@ -1,0 +1,4 @@
+# Client-side encryption/decryption tools
+cryptography==41.0.7
+requests==2.31.0
+click==8.1.7

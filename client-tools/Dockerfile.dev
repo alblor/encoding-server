@@ -1,0 +1,32 @@
+# Development Dockerfile for client tools
+FROM python:3.11-slim-bullseye
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r client && useradd -r -g client -u 1001 client
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better Docker layer caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy client tools
+COPY . .
+
+# Create directories for test data
+RUN mkdir -p /test-input /test-output /app/test-keys && \
+    chown -R client:client /app /test-input /test-output
+
+# Switch to non-root user
+USER client
+
+# Default command
+CMD ["bash"]
