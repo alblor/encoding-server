@@ -39,5 +39,5 @@ isort==5.12.0
 flake8==6.1.0
 mypy==1.7.1
 
-# Documentation
-python-markdown==3.5.1
+# Documentation  
+markdown==3.5.1

@@ -23,42 +23,42 @@ help:
 # Build all containers
 build:
 	@echo "Building Docker containers..."
-	docker-compose -f docker-compose.dev.yml build
+	docker compose -f docker-compose.dev.yml build
 
 # Start development environment
 up:
 	@echo "Starting Secure Media Encoding Server..."
-	docker-compose -f docker-compose.dev.yml up -d
+	docker compose -f docker-compose.dev.yml up -d
 	@echo "API available at: http://localhost:8000"
 	@echo "API Documentation: http://localhost:8000/api/docs"
 
 # Stop development environment
 down:
 	@echo "Stopping development environment..."
-	docker-compose -f docker-compose.dev.yml down
+	docker compose -f docker-compose.dev.yml down
 
 # Run tests
 test:
 	@echo "Running test suite..."
-	docker-compose -f docker-compose.dev.yml exec encoding-api python -m pytest /app/tests/ -v
+	docker compose -f docker-compose.dev.yml exec encoding-api python -m pytest /app/tests/ -v
 
 # Clean up everything
 clean:
 	@echo "Cleaning up containers and volumes..."
-	docker-compose -f docker-compose.dev.yml down -v
+	docker compose -f docker-compose.dev.yml down -v
 	docker system prune -f
 
 # Show logs
 logs:
-	docker-compose -f docker-compose.dev.yml logs -f
+	docker compose -f docker-compose.dev.yml logs -f
 
 # Open shell in API container
 shell:
-	docker-compose -f docker-compose.dev.yml exec encoding-api bash
+	docker compose -f docker-compose.dev.yml exec encoding-api bash
 
 # Open shell in client tools container
 client-shell:
-	docker-compose -f docker-compose.dev.yml run --rm test-client bash
+	docker compose -f docker-compose.dev.yml run --rm test-client bash
 
 # Example: encrypt a test file (requires test media)
 encrypt:
