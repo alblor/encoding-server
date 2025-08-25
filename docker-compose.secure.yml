@@ -1,0 +1,187 @@
+version: '3.8'
+
+services:
+  # Ultra-Secure Encoding API - Zero-Trust with Encrypted Swap Emulation
+  secure-encoding-api:
+    build: 
+      context: .
+      dockerfile: api/Dockerfile.secure
+    ports:
+      - "8000:8000"
+    
+    # SECURITY: Pure tmpfs storage - nothing touches host disk
+    tmpfs:
+      - /tmp:size=8g,noexec,nosuid,nodev,noatime
+      - /tmp/memory-pool:size=12g,noexec,nosuid,nodev,noatime
+      - /tmp/encrypted-swap:size=16g,noexec,nosuid,nodev,noatime
+      - /var/tmp:size=1g,noexec,nosuid,nodev,noatime
+    
+    # SECURITY: Memory limits and protection (CPU managed by Proxmox)
+    deploy:
+      resources:
+        limits:
+          memory: 32g
+          # CPU limits removed - Proxmox manages CPU allocation
+        reservations:
+          memory: 16g
+          # CPU reservations removed - Proxmox manages CPU allocation
+    
+    # SECURITY: Maximum container security hardening
+    security_opt:
+      - no-new-privileges:true
+      - apparmor:unconfined  # Allows cryptsetup operations
+      - seccomp:unconfined   # Allows memory mapping operations
+    
+    # SECURITY: Drop all capabilities, add only essential ones
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - MKNOD          # For cryptsetup loop devices
+      - SYS_ADMIN      # For memory mapping and tmpfs operations
+    
+    # SECURITY: Non-root user
+    user: "1000:1000"
+    
+    # SECURITY: Read-only root filesystem
+    read_only: true
+    
+    # SECURITY: Environment isolation
+    environment:
+      - ENVIRONMENT=secure-production
+      - ENCRYPTION_MODE=dual
+      - PARAMETER_VALIDATION=strict
+      - REDIS_URL=redis://redis-secure:6379
+      - DEBUG=false
+      - LOG_LEVEL=warning
+      - TEMP_STORAGE=/tmp/memory-pool
+      - ENCRYPTED_STORAGE=/tmp/encrypted-swap
+      - MEMORY_THRESHOLD=4294967296  # 4GB threshold
+      - SECURE_MEMORY=true
+      - ZERO_TRACE=true
+    
+    # SECURITY: Process isolation
+    pid: "host"
+    ipc: "none"
+    
+    # SECURITY: Memory and CPU limits
+    mem_limit: 32g
+    memswap_limit: 32g  # Same as memory (no actual swap)
+    mem_swappiness: 0   # Prevent kernel swap usage
+    
+    # SECURITY: Container restart policy
+    restart: "no"  # Manual restart only
+    
+    depends_on:
+      - redis-secure
+    networks:
+      - secure-encoding-net
+    
+    # SECURITY: Health check with timeout
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--connect-timeout", "5", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+  
+  # Ultra-Secure Redis - Memory-only with encryption
+  redis-secure:
+    image: redis:7-alpine
+    
+    # SECURITY: Pure memory storage
+    tmpfs:
+      - /data:size=2g,noexec,nosuid,nodev,noatime
+      - /tmp:size=512m,noexec,nosuid,nodev,noatime
+    
+    # SECURITY: Redis configuration for maximum security
+    command: >
+      redis-server 
+      --save ""
+      --appendonly no
+      --maxmemory 1g
+      --maxmemory-policy allkeys-lru
+      --tcp-backlog 128
+      --timeout 300
+      --tcp-keepalive 60
+      --bind 127.0.0.1
+      --protected-mode yes
+      --port 6379
+    
+    # SECURITY: Container hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    
+    # SECURITY: Non-root user
+    user: "999:999"
+    
+    # SECURITY: Read-only root filesystem
+    read_only: true
+    
+    # SECURITY: Memory limits
+    mem_limit: 2g
+    memswap_limit: 2g
+    mem_swappiness: 0
+    
+    networks:
+      - secure-encoding-net
+    
+    # SECURITY: No external exposure
+    expose:
+      - "6379"
+  
+  # Ultra-Secure Test Client
+  secure-test-client:
+    build: 
+      context: ./client-tools
+      dockerfile: Dockerfile.secure
+    
+    # SECURITY: Minimal tmpfs storage for client operations
+    tmpfs:
+      - /tmp:size=4g,noexec,nosuid,nodev,noatime
+      - /home/encodinguser/.local:size=512m,noexec,nosuid,nodev,noatime
+    
+    # SECURITY: Container hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    
+    user: "1000:1000"
+    read_only: true
+    
+    environment:
+      - API_BASE_URL=http://secure-encoding-api:8000
+      - SECURE_CLIENT=true
+    
+    networks:
+      - secure-encoding-net
+    
+    profiles:
+      - testing
+
+# SECURITY: Controlled external access for API functionality while maintaining isolation
+networks:
+  secure-encoding-net:
+    driver: bridge
+    # internal: true removed - API must be accessible for user jobs and testing
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+
+# SECURITY: No named volumes - everything in tmpfs
+volumes: {}

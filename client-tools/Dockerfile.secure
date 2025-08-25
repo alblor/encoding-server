@@ -1,0 +1,52 @@
+# Ultra-Secure Client Tools - Alpine Linux Base
+# Maximum security for client-side encryption operations
+# Author: Lorenzo Albanese (alblor)
+
+FROM alpine:3.19
+
+# Security: Create non-root user
+RUN addgroup -g 1000 -S encodinguser && \
+    adduser -u 1000 -S encodinguser -G encodinguser -h /home/encodinguser -s /bin/sh
+
+# Security: Install only essential packages
+RUN apk update --no-cache && \
+    apk add --no-cache \
+        python3=~3.11 \
+        py3-pip \
+        py3-cryptography \
+        curl \
+        && \
+    apk del --no-cache apk-tools && \
+    rm -rf /var/cache/apk/* /tmp/* /var/tmp/* /root/.cache
+
+# Security: Remove package manager
+RUN rm -rf /sbin/apk /usr/share/apk /lib/apk /etc/apk
+
+# Security: Create secure directories
+RUN mkdir -p /app /home/encodinguser/.local && \
+    chown -R encodinguser:encodinguser /app /home/encodinguser && \
+    chmod 700 /app /home/encodinguser/.local
+
+# Switch to non-root user
+USER encodinguser
+WORKDIR /app
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip3 install --user --no-cache-dir --no-deps -r requirements.txt
+
+# Copy client tools
+COPY --chown=encodinguser:encodinguser . .
+
+# Security: Set restrictive permissions
+RUN find /app -type f -exec chmod 644 {} \; && \
+    find /app -type d -exec chmod 755 {} \; && \
+    chmod 755 /app/*.py
+
+# Security: Remove cache files
+RUN find /app -name "*.pyc" -delete && \
+    find /app -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /home/encodinguser/.cache /home/encodinguser/.local/share/pip
+
+# Default command
+ENTRYPOINT ["python3"]

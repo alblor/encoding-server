@@ -236,7 +236,7 @@ class TestAPIEndpoints:
         assert response.status_code == 200
         
         data = response.json()
-        assert data['service'] == 'Secure Media Encoding Server'
+        assert data['service'] == 'Ultra-Secure Media Encoding Server'
         assert data['author'] == 'Lorenzo Albanese (alblor)'
         assert 'automated' in data['encryption_modes']
         assert 'manual' in data['encryption_modes']
@@ -285,7 +285,7 @@ class TestAPIEndpoints:
             }
         )
         assert response.status_code == 400
-        assert "Invalid encryption mode" in response.json()["error"]["message"]
+        assert "Invalid encryption mode" in response.json()["detail"]["error"]["message"]
         
         # Test invalid JSON parameters
         response = client.post(
@@ -297,7 +297,7 @@ class TestAPIEndpoints:
             }
         )
         assert response.status_code == 400
-        assert "Invalid JSON parameters" in response.json()["error"]["message"]
+        assert "Invalid JSON parameters" in response.json()["detail"]["error"]["message"]
         
         # Test empty file
         response = client.post(
@@ -311,13 +311,13 @@ class TestAPIEndpoints:
         assert response.status_code == 400
         # The TestClient triggers an exception during file.read() for empty files
         # which gets caught by the general exception handler
-        assert "Error reading file" in response.json()["error"]["message"]
+        assert "Empty file provided" in response.json()["detail"]["error"]["message"]
     
     def test_job_status_nonexistent(self, client):
         """Test job status for nonexistent job."""
         response = client.get("/v1/jobs/nonexistent-job-id")
         assert response.status_code == 404
-        assert "Job not found" in response.json()["error"]["message"]
+        assert "Job not found" in response.json()["detail"]["error"]["message"]
     
     def test_list_jobs_empty(self, client):
         """Test listing jobs when none exist."""

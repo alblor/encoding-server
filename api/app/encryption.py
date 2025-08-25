@@ -119,6 +119,11 @@ class EncryptionManager:
         # Store key securely (in production, use proper key management)
         key_id = secrets.token_hex(16)
         
+        # Store key in memory for development (DEVELOPMENT ONLY)
+        if not hasattr(self, '_key_store'):
+            self._key_store = {}
+        self._key_store[key_id] = key
+        
         # Combine IV + encrypted data + tag
         result = iv + encrypted_data + encryptor.tag
         
@@ -144,4 +149,134 @@ class EncryptionManager:
         """Retrieve encryption key for given ID (implement secure storage)."""
         # This is a placeholder - implement proper key management
         # In production, use Redis, HashiCorp Vault, or similar
-        return b"temporary_key_for_development_only"
+        # For now, store keys in memory (DEVELOPMENT ONLY)
+        if not hasattr(self, '_key_store'):
+            self._key_store = {}
+        
+        key = self._key_store.get(key_id, b"temporary_key_for_development_only")
+        return key
+    
+    def decrypt_password_based_file(self, input_path: str, output_path: str, password: str) -> dict:
+        """
+        Decrypt a password-based encrypted file (matching client-side encrypt_media.py format).
+        
+        File format: [32-byte salt][16-byte IV][encrypted data][16-byte tag]
+        """
+        input_file = Path(input_path)
+        output_file = Path(output_path)
+        
+        if not input_file.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+            
+        with open(input_file, 'rb') as inf:
+            # Read salt (first 32 bytes)
+            salt = inf.read(32)
+            if len(salt) != 32:
+                raise ValueError("Invalid encrypted file format: missing salt")
+            
+            # Read IV (next 16 bytes)
+            iv = inf.read(16)
+            if len(iv) != 16:
+                raise ValueError("Invalid encrypted file format: missing IV")
+            
+            # Read the encrypted data and tag
+            file_size = input_file.stat().st_size
+            encrypted_size = file_size - 32 - 16 - 16  # minus salt, IV, and tag
+            
+            if encrypted_size < 0:
+                raise ValueError("Invalid encrypted file format: file too small")
+            
+            # Derive key from password using same method as client
+            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+            from cryptography.hazmat.primitives import hashes
+            
+            kdf = PBKDF2HMAC(
+                algorithm=hashes.SHA256(),
+                length=32,  # 256-bit key
+                salt=salt,
+                iterations=100000  # Must match client iterations
+            )
+            key = kdf.derive(password.encode('utf-8'))
+            
+            # Read encrypted data
+            encrypted_data = inf.read(encrypted_size)
+            if len(encrypted_data) != encrypted_size:
+                raise ValueError("Invalid encrypted file format: incomplete encrypted data")
+            
+            # Read authentication tag (last 16 bytes)
+            tag = inf.read(16)
+            if len(tag) != 16:
+                raise ValueError("Invalid encrypted file format: missing authentication tag")
+        
+        # Decrypt the data
+        cipher = Cipher(algorithms.AES(key), modes.GCM(iv, tag))
+        decryptor = cipher.decryptor()
+        
+        decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+        
+        # Write decrypted data to output file
+        with open(output_file, 'wb') as outf:
+            outf.write(decrypted_data)
+        
+        return {
+            'decrypted_file': str(output_file),
+            'size': len(decrypted_data),
+            'original_encrypted_size': file_size
+        }
+    
+    def encrypt_password_based_file(self, input_path: str, output_path: str, password: str) -> dict:
+        """
+        Encrypt a file using password-based encryption (matching client-side encrypt_media.py format).
+        
+        File format: [32-byte salt][16-byte IV][encrypted data][16-byte tag]
+        """
+        input_file = Path(input_path)
+        output_file = Path(output_path)
+        
+        if not input_file.exists():
+            raise FileNotFoundError(f"Input file not found: {input_path}")
+        
+        # Generate random salt and IV (matching client format)
+        salt = os.urandom(32)  # 256-bit salt
+        iv = os.urandom(16)    # 128-bit IV for GCM
+        
+        # Derive key from password using same method as client
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,  # 256-bit key
+            salt=salt,
+            iterations=100000  # Must match client iterations
+        )
+        key = kdf.derive(password.encode('utf-8'))
+        
+        # Initialize cipher
+        cipher = Cipher(algorithms.AES(key), modes.GCM(iv))
+        encryptor = cipher.encryptor()
+        
+        # Encrypt file with exact client format
+        with open(output_file, 'wb') as outf:
+            # Write metadata header (matching client format)
+            outf.write(salt)  # 32 bytes
+            outf.write(iv)    # 16 bytes
+            
+            # Encrypt file content in chunks
+            with open(input_file, 'rb') as inf:
+                while chunk := inf.read(self.chunk_size):
+                    encrypted_chunk = encryptor.update(chunk)
+                    outf.write(encrypted_chunk)
+            
+            # Finalize and write authentication tag
+            encryptor.finalize()
+            outf.write(encryptor.tag)  # 16 bytes
+        
+        return {
+            'encrypted_file': str(output_file),
+            'original_size': input_file.stat().st_size,
+            'encrypted_size': output_file.stat().st_size,
+            'algorithm': 'AES-256-GCM',
+            'kdf': 'PBKDF2-SHA256',
+            'iterations': 100000
+        }

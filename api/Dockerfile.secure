@@ -1,0 +1,60 @@
+# Ultra-Secure Alpine Linux Base for Zero-Trust Media Encoding
+# Maximum security, anonymity, and memory-only processing
+# Author: Lorenzo Albanese (alblor)
+
+FROM alpine:3.19
+
+# Security: Create non-root user with minimal privileges
+RUN addgroup -g 1000 -S encodinguser && \
+    adduser -u 1000 -S encodinguser -G encodinguser -h /home/encodinguser -s /bin/sh
+
+# Security: Install only essential packages with signature verification
+RUN apk update --no-cache && \
+    apk add --no-cache \
+        python3=~3.11 \
+        py3-pip \
+        ffmpeg \
+        curl \
+        cryptsetup \
+        util-linux \
+        && \
+    apk del --no-cache apk-tools && \
+    rm -rf /var/cache/apk/* /tmp/* /var/tmp/* /root/.cache
+
+# Security: Remove package manager to prevent runtime modifications
+RUN rm -rf /sbin/apk /usr/share/apk /lib/apk /etc/apk
+
+# Security: Create secure directory structure in tmpfs locations
+RUN mkdir -p /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool && \
+    chown -R encodinguser:encodinguser /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool && \
+    chmod 700 /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool
+
+# Install Python dependencies as non-root user
+USER encodinguser
+WORKDIR /app
+
+# Copy requirements and install Python packages
+COPY api/requirements.txt .
+RUN pip3 install --user --no-cache-dir --break-system-packages -r requirements.txt
+
+# Copy application code and tests (now from root context)
+COPY --chown=encodinguser:encodinguser api/app ./app
+COPY --chown=encodinguser:encodinguser api/main.py .
+COPY --chown=encodinguser:encodinguser tests ./tests
+
+# Security: Set restrictive file permissions
+RUN find /app -type f -exec chmod 644 {} \; && \
+    find /app -type d -exec chmod 755 {} \; && \
+    chmod 755 /app/main.py
+
+# Security: Remove any potential sensitive files and dev-only code
+RUN find /app -name "*.pyc" -delete && \
+    find /app -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true && \
+    rm -rf /home/encodinguser/.cache /home/encodinguser/.local/share/pip && \
+    rm -f /app/main_dev.py  # Remove development main file
+
+# Expose only necessary port
+EXPOSE 8000
+
+# Security: Use exec form, non-root user, and primary main file
+ENTRYPOINT ["python3", "main.py"]
