@@ -25,6 +25,7 @@ import io
 from app.config import settings
 from app.secure_jobs import SecureJobProcessor
 from app.encryption import EncryptionManager
+from app.documentation import DocumentationManager
 
 # Configure secure logging
 logging.basicConfig(
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.job_processor = SecureJobProcessor(
             encryption_manager=app.state.encryption_manager
         )
+        app.state.documentation_manager = DocumentationManager()
         
         logger.info("🔐 Ultra-secure services initialized successfully")
         logger.info(f"💾 Memory threshold: {os.getenv('MEMORY_THRESHOLD', '4GB')}")
@@ -370,6 +372,117 @@ async def list_jobs():
         "jobs": jobs,
         "total_jobs": len(jobs)
     }
+
+
+# ================================
+# DOCUMENTATION ENDPOINTS
+# ================================
+
+@app.get("/v1/docs")
+async def get_documentation_index():
+    """Get documentation index and navigation structure."""
+    try:
+        return app.state.documentation_manager.get_documentation_index()
+    except Exception as e:
+        logger.error(f"Documentation index error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve documentation index")
+
+
+@app.get("/v1/docs/overview")
+async def get_system_overview():
+    """Get system overview and quick start guide."""
+    try:
+        return app.state.documentation_manager.get_system_overview()
+    except Exception as e:
+        logger.error(f"System overview documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve system overview")
+
+
+@app.get("/v1/docs/modes")
+async def get_encryption_modes_guide():
+    """Get comprehensive dual-mode encryption guide."""
+    try:
+        return app.state.documentation_manager.get_encryption_modes_guide()
+    except Exception as e:
+        logger.error(f"Encryption modes documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve encryption modes guide")
+
+
+@app.get("/v1/docs/endpoints")
+async def get_endpoints_list():
+    """Get list of all documented API endpoints."""
+    try:
+        return app.state.documentation_manager.get_endpoints_list()
+    except Exception as e:
+        logger.error(f"Endpoints list documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve endpoints list")
+
+
+@app.get("/v1/docs/endpoints/{endpoint_id}")
+async def get_endpoint_documentation(endpoint_id: str):
+    """Get detailed documentation for a specific endpoint."""
+    try:
+        docs = app.state.documentation_manager.get_endpoint_documentation(endpoint_id)
+        if not docs:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": {
+                        "message": f"Documentation for endpoint '{endpoint_id}' not found",
+                        "type": "not_found_error",
+                        "available_endpoints": [
+                            "root", "health", "presets", "keypair",
+                            "submit_job", "job_status", "job_result", "list_jobs"
+                        ]
+                    }
+                }
+            )
+        return docs
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Endpoint documentation error for {endpoint_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve endpoint documentation")
+
+
+@app.get("/v1/docs/auth")
+async def get_authentication_guide():
+    """Get authentication and API key management guide."""
+    try:
+        return app.state.documentation_manager.get_authentication_guide()
+    except Exception as e:
+        logger.error(f"Authentication guide documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve authentication guide")
+
+
+@app.get("/v1/docs/examples")
+async def get_workflow_examples():
+    """Get comprehensive workflow examples with curl commands."""
+    try:
+        return app.state.documentation_manager.get_workflow_examples()
+    except Exception as e:
+        logger.error(f"Workflow examples documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve workflow examples")
+
+
+@app.get("/v1/docs/errors")
+async def get_error_reference():
+    """Get comprehensive error reference and troubleshooting guide."""
+    try:
+        return app.state.documentation_manager.get_error_reference()
+    except Exception as e:
+        logger.error(f"Error reference documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve error reference")
+
+
+@app.get("/v1/docs/tools")
+async def get_client_tools_documentation():
+    """Get comprehensive client tools documentation."""
+    try:
+        return app.state.documentation_manager.get_client_tools_documentation()
+    except Exception as e:
+        logger.error(f"Client tools documentation error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve client tools documentation")
 
 
 if __name__ == "__main__":
