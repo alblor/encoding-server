@@ -26,20 +26,20 @@ services:
           memory: 16g
           # CPU reservations removed - Proxmox manages CPU allocation
     
-    # SECURITY: Maximum container security hardening
+    # SECURITY: Maximum container security hardening with AppArmor isolation
     security_opt:
       - no-new-privileges:true
-      - apparmor:unconfined  # Allows cryptsetup operations
-      - seccomp:unconfined   # Allows memory mapping operations
+      - apparmor=ffmpeg-isolated  # Custom AppArmor profile with network isolation
+      # Note: seccomp profile can be customized for additional syscall filtering
     
-    # SECURITY: Drop all capabilities, add only essential ones
+    # SECURITY: Drop all capabilities, add only essential ones for FFmpeg isolation
     cap_drop:
       - ALL
     cap_add:
-      - SETUID
-      - SETGID
-      - MKNOD          # For cryptsetup loop devices
-      - SYS_ADMIN      # For memory mapping and tmpfs operations
+      - SETUID         # Required for process isolation
+      - SETGID         # Required for process isolation
+      # REMOVED MKNOD and SYS_ADMIN - FFmpeg does not need these
+      # AppArmor provides the necessary confinement
     
     # SECURITY: Non-root user
     user: "1000:1000"
@@ -47,11 +47,11 @@ services:
     # SECURITY: Read-only root filesystem
     read_only: true
     
-    # SECURITY: Environment isolation
+    # SECURITY: Environment isolation with enhanced security features
     environment:
       - ENVIRONMENT=secure-production
       - ENCRYPTION_MODE=dual
-      - PARAMETER_VALIDATION=strict
+      - PARAMETER_VALIDATION=enhanced  # Enhanced validation with AV1 support
       - REDIS_URL=redis://redis-secure:6379
       - DEBUG=false
       - LOG_LEVEL=warning
@@ -60,6 +60,9 @@ services:
       - MEMORY_THRESHOLD=4294967296  # 4GB threshold
       - SECURE_MEMORY=true
       - ZERO_TRACE=true
+      - APPARMOR_PROFILE=ffmpeg-isolated  # Force AppArmor profile usage
+      - NETWORK_ISOLATION=true           # Enable network isolation checks
+      - FFMPEG_SECURITY_LEVEL=maximum    # MAXIMUM security (all requirements must be met)
     
     # SECURITY: Process isolation
     pid: "host"

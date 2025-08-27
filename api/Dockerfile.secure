@@ -8,7 +8,7 @@ FROM alpine:3.19
 RUN addgroup -g 1000 -S encodinguser && \
     adduser -u 1000 -S encodinguser -G encodinguser -h /home/encodinguser -s /bin/sh
 
-# Security: Install only essential packages with signature verification
+# Security: Install essential packages with signature verification + AppArmor support
 RUN apk update --no-cache && \
     apk add --no-cache \
         python3=~3.11 \
@@ -17,6 +17,8 @@ RUN apk update --no-cache && \
         curl \
         cryptsetup \
         util-linux \
+        apparmor \
+        apparmor-utils \
         && \
     apk del --no-cache apk-tools && \
     rm -rf /var/cache/apk/* /tmp/* /var/tmp/* /root/.cache
@@ -24,10 +26,17 @@ RUN apk update --no-cache && \
 # Security: Remove package manager to prevent runtime modifications
 RUN rm -rf /sbin/apk /usr/share/apk /lib/apk /etc/apk
 
-# Security: Create secure directory structure in tmpfs locations
+# Security: Create secure directory structure in tmpfs locations  
 RUN mkdir -p /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool && \
     chown -R encodinguser:encodinguser /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool && \
     chmod 700 /app /tmp/encoding /tmp/encrypted-swap /tmp/memory-pool
+
+# Security: Install AppArmor profile for complete FFmpeg isolation
+COPY security/apparmor/ffmpeg-isolated /etc/apparmor.d/ffmpeg-isolated
+COPY security/install-apparmor.sh /usr/local/bin/install-apparmor.sh
+RUN chmod 644 /etc/apparmor.d/ffmpeg-isolated && \
+    chmod +x /usr/local/bin/install-apparmor.sh && \
+    mkdir -p /var/log/apparmor
 
 # Install Python dependencies as non-root user
 USER encodinguser

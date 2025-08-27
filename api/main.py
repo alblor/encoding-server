@@ -166,6 +166,104 @@ async def health_check():
     }
 
 
+@app.get("/v1/security/status")
+async def security_status():
+    """
+    Dynamic security status endpoint - reports actual running configuration
+    with no hardcoded assumptions. All values derived from environment or system state.
+    """
+    try:
+        # Core environment variables (only source of configuration)
+        env_vars = {
+            "ENVIRONMENT": os.getenv("ENVIRONMENT", "unknown"),
+            "FFMPEG_SECURITY_LEVEL": os.getenv("FFMPEG_SECURITY_LEVEL", "unknown"),
+            "DISABLE_ENCRYPTION": os.getenv("DISABLE_ENCRYPTION", "false"),
+            "ENCRYPTION_MODE": os.getenv("ENCRYPTION_MODE", "unknown"),
+            "SECURE_MEMORY": os.getenv("SECURE_MEMORY", "unknown"),
+            "ZERO_TRACE": os.getenv("ZERO_TRACE", "unknown"),
+            "APPARMOR_PROFILE": os.getenv("APPARMOR_PROFILE", "none"),
+            "NETWORK_ISOLATION": os.getenv("NETWORK_ISOLATION", "unknown")
+        }
+        
+        # System checks - actual runtime state only
+        system_state = {}
+        
+        # Check what's actually available
+        system_state["ffmpeg_available"] = bool(os.system("which ffmpeg > /dev/null 2>&1") == 0)
+        system_state["apparmor_available"] = os.path.exists("/sys/kernel/security/apparmor")
+        system_state["containerized"] = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        
+        # Check actual mounts
+        tmpfs_mounts = {}
+        try:
+            with open("/proc/mounts", "r") as f:
+                mounts_content = f.read()
+                for path in ["/tmp/memory-pool", "/tmp/encrypted-swap", "/var/tmp"]:
+                    tmpfs_mounts[path] = {
+                        "exists": os.path.exists(path),
+                        "is_tmpfs": f"tmpfs {path}" in mounts_content
+                    }
+        except:
+            tmpfs_mounts["error"] = "Cannot read /proc/mounts"
+        
+        system_state["tmpfs_mounts"] = tmpfs_mounts
+        
+        # Check actual Python modules availability
+        modules_available = {}
+        for module in ["resource", "cryptography", "redis"]:
+            try:
+                __import__(module)
+                modules_available[module] = True
+            except ImportError:
+                modules_available[module] = False
+        
+        system_state["python_modules"] = modules_available
+        
+        # Actual validation test
+        validation_working = False
+        try:
+            from app.jobs import FFmpegValidator
+            validator = FFmpegValidator()
+            # Simple validation test
+            result = validator.validate_parameters(["-c:v", "libx264"])
+            validation_working = True
+        except Exception as e:
+            system_state["validation_error"] = str(e)
+        
+        system_state["parameter_validation_working"] = validation_working
+        
+        # Build dynamic status
+        status = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "environment_variables": env_vars,
+            "system_state": system_state,
+            "encryption_disabled": env_vars["DISABLE_ENCRYPTION"].lower() == "true"
+        }
+        
+        # Dynamic warnings based on actual state
+        warnings = []
+        if status["encryption_disabled"]:
+            warnings.append("ENCRYPTION DISABLED - UNSAFE CONFIGURATION")
+        if not system_state["ffmpeg_available"]:
+            warnings.append("FFmpeg binary not available")
+        if not system_state["parameter_validation_working"]:
+            warnings.append("Parameter validation not working")
+        if not system_state["apparmor_available"] and env_vars["ENVIRONMENT"] == "secure-production":
+            warnings.append("AppArmor not available in production environment")
+        
+        status["warnings"] = warnings
+        
+        return status
+        
+    except Exception as e:
+        logger.error(f"Security status check failed: {e}")
+        return {
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(e),
+            "system_accessible": True  # At least we can respond
+        }
+
+
 @app.get("/v1/presets")
 async def get_encoding_presets():
     """Get available encoding presets."""

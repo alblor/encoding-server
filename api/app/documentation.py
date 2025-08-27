@@ -276,6 +276,13 @@ class DocumentationManager:
                     "description": "Available FFmpeg encoding presets and parameters"
                 },
                 {
+                    "id": "security_status",
+                    "path": "/v1/security/status",
+                    "method": "GET",
+                    "title": "Security Status",
+                    "description": "Dynamic security status and system configuration report"
+                },
+                {
                     "id": "keypair",
                     "path": "/v1/encryption/keypair",
                     "method": "POST",
@@ -325,6 +332,7 @@ class DocumentationManager:
             "root": self._get_root_endpoint_docs(),
             "health": self._get_health_endpoint_docs(),
             "presets": self._get_presets_endpoint_docs(),
+            "security_status": self._get_security_status_endpoint_docs(),
             "keypair": self._get_keypair_endpoint_docs(),
             "submit_job": self._get_submit_job_endpoint_docs(),
             "job_status": self._get_job_status_endpoint_docs(),
@@ -479,6 +487,75 @@ class DocumentationManager:
                     "title": "Get all encoding presets",
                     "request": f"curl -X GET {self.base_url}/v1/presets",
                     "usage_note": "Use preset parameters in job submission params field"
+                }
+            ]
+        }
+        
+        return response
+    
+    def _get_security_status_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for GET /v1/security/status endpoint."""
+        response = self._create_response_template("endpoint", "Security Status Endpoint")
+        
+        response["manpage"] = {
+            "name": "GET /v1/security/status",
+            "synopsis": "Get dynamic security status and system configuration",
+            "description": (
+                "Returns comprehensive security status report including environment variables, "
+                "system state, and active security layers. This endpoint provides real-time "
+                "assessment of the security posture with no hardcoded assumptions - all values "
+                "are derived from actual environment configuration and system state."
+            ),
+            "method": "GET",
+            "path": "/v1/security/status", 
+            "authentication": "None required",
+            "parameters": [],
+            "responses": {
+                "200": {
+                    "description": "Security status retrieved successfully",
+                    "content": {
+                        "timestamp": "2025-08-27T15:20:09.023762",
+                        "environment_variables": {
+                            "ENVIRONMENT": "secure-production",
+                            "FFMPEG_SECURITY_LEVEL": "high",
+                            "DISABLE_ENCRYPTION": "false",
+                            "ENCRYPTION_MODE": "dual",
+                            "SECURE_MEMORY": "true",
+                            "ZERO_TRACE": "true",
+                            "APPARMOR_PROFILE": "ffmpeg-isolated",
+                            "NETWORK_ISOLATION": "true"
+                        },
+                        "system_state": {
+                            "ffmpeg_available": True,
+                            "apparmor_available": False,
+                            "containerized": True,
+                            "tmpfs_mounts": {
+                                "/tmp/memory-pool": {"exists": True, "is_tmpfs": True},
+                                "/tmp/encrypted-swap": {"exists": True, "is_tmpfs": True},
+                                "/var/tmp": {"exists": True, "is_tmpfs": True}
+                            },
+                            "python_modules": {
+                                "resource": True,
+                                "cryptography": True,
+                                "redis": True
+                            },
+                            "parameter_validation_working": True
+                        },
+                        "encryption_disabled": False,
+                        "warnings": ["AppArmor not available in production environment"]
+                    }
+                }
+            },
+            "examples": [
+                {
+                    "title": "Get security status",
+                    "request": f"curl -X GET {self.base_url}/v1/security/status",
+                    "description": "Check current security configuration and system state"
+                },
+                {
+                    "title": "Monitor security warnings",
+                    "request": f"curl -s {self.base_url}/v1/security/status | jq '.warnings'",
+                    "description": "Extract only security warnings from status response"
                 }
             ]
         }

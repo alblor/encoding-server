@@ -146,23 +146,24 @@ class TestFFmpegValidator:
         
         result = ffmpeg_validator.validate_parameters(params)
         
-        assert 'video_codec' in result
-        assert result['video_codec'] == '-c:v libx264'
-        assert 'audio_codec' in result
-        assert result['audio_codec'] == '-c:a aac'
-        assert result['custom_params'] == ['-preset', 'fast']
+        assert result['valid'] == True
+        assert len(result['violations']) == 0
+        assert 'video_codec' in result['safe_params']
+        assert result['safe_params']['video_codec'] == '-c:v libx264'
+        assert 'audio_codec' in result['safe_params']
+        assert result['safe_params']['audio_codec'] == '-c:a aac'
+        assert result['safe_params']['custom_params'] == ['-preset', 'fast']
     
     def test_validate_parameters_blocked(self, ffmpeg_validator):
-        """Test that blocked parameters are filtered out."""
+        """Test that blocked parameters trigger security violations."""
         params = {
             'video_codec': 'libx264',
             'custom_params': ['-preset', 'fast', '; rm -rf /', 'wget malicious.com']
         }
         
-        result = ffmpeg_validator.validate_parameters(params)
-        
-        # Should only contain safe parameters
-        assert result['custom_params'] == ['-preset', 'fast']
+        # This should raise a ValueError due to security violation
+        with pytest.raises(ValueError, match="VIOLATION:.*Shell metacharacters detected"):
+            ffmpeg_validator.validate_parameters(params)
     
     def test_build_command(self, ffmpeg_validator):
         """Test FFmpeg command building."""
@@ -172,9 +173,10 @@ class TestFFmpegValidator:
             'custom_params': ['-preset', 'medium']
         }
         
-        cmd = ffmpeg_validator.build_command('/input.mp4', '/output.mp4', params)
+        # Use relative paths to avoid absolute path security violation
+        cmd = ffmpeg_validator.build_command('input.mp4', 'output.mp4', params)
         
-        expected_parts = ['ffmpeg', '-i', '/input.mp4', '-c:v', 'libx264', '-c:a', 'copy', '-preset', 'medium', '/output.mp4']
+        expected_parts = ['ffmpeg', '-i', 'input.mp4', '-c:v', 'libx264', '-c:a', 'copy', '-preset', 'medium', 'output.mp4']
         assert cmd == expected_parts
 
 

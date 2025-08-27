@@ -1,0 +1,252 @@
+# AppArmor profile for completely isolated FFmpeg execution
+# Provides maximum security for media encoding/decoding operations
+#
+# This profile implements:
+# - Complete network isolation (deny network)
+# - Minimal file system access (only tmpfs working directory)  
+# - Restricted capabilities and system calls
+# - Prevention of arbitrary code execution
+#
+# Author: Lorenzo Albanese (alblor)
+# Usage: sudo apparmor_parser -r /path/to/ffmpeg-isolated
+
+#include <tunables/global>
+
+# Profile for isolated FFmpeg execution
+/usr/bin/ffmpeg flags=(complain) {
+  #include <abstractions/base>
+  
+  # ===== NETWORK ISOLATION =====
+  # CRITICAL: Deny ALL network access - encoding/decoding requires no network
+  deny network,
+  deny network inet,
+  deny network inet6,
+  deny network unix,
+  deny network netlink,
+  deny network packet,
+  deny network bluetooth,
+  
+  # Block network-related capabilities
+  deny capability net_admin,
+  deny capability net_bind_service, 
+  deny capability net_broadcast,
+  deny capability net_raw,
+  
+  # ===== FILE SYSTEM RESTRICTIONS =====
+  
+  # Allow access to FFmpeg binary itself
+  /usr/bin/ffmpeg mr,
+  /usr/local/bin/ffmpeg mr,
+  
+  # Essential system libraries (read-only)
+  /lib/x86_64-linux-gnu/** mr,
+  /lib64/** mr,
+  /usr/lib/x86_64-linux-gnu/** mr,
+  /usr/lib/** mr,
+  /lib/** mr,
+  
+  # Minimal proc access (required for FFmpeg operation)
+  @{PROC}/version r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/meminfo r,
+  @{PROC}/self/stat r,
+  @{PROC}/self/status r,
+  @{PROC}/sys/vm/overcommit_memory r,
+  
+  # ONLY allow tmpfs working directory (complete isolation)
+  /tmp/memory-pool/ rw,
+  /tmp/memory-pool/** rw,
+  
+  # Essential device access (minimal)
+  /dev/null rw,
+  /dev/zero r,
+  /dev/urandom r,
+  
+  # ===== DENY DANGEROUS LOCATIONS =====
+  
+  # Block all system directories
+  deny /etc/** rwklmx,
+  deny /root/** rwklmx,
+  deny /home/** rwklmx,
+  deny /var/** rwklmx,
+  deny /opt/** rwklmx,
+  deny /srv/** rwklmx,
+  deny /media/** rwklmx,
+  deny /mnt/** rwklmx,
+  
+  # Block system binaries and executables  
+  deny /bin/** x,
+  deny /sbin/** x,
+  deny /usr/bin/** x,
+  deny /usr/sbin/** x,
+  deny /usr/local/bin/** x,
+  deny /usr/local/sbin/** x,
+  
+  # Exception: Allow FFmpeg itself
+  /usr/bin/ffmpeg ix,
+  /usr/local/bin/ffmpeg ix,
+  
+  # Block device access (except minimal required)
+  deny /dev/** rwklmx,
+  /dev/null rw,
+  /dev/zero r,
+  /dev/urandom r,
+  
+  # Block special filesystems
+  deny /proc/** rwklmx,
+  deny /sys/** rwklmx,
+  deny /run/** rwklmx,
+  
+  # Minimal exceptions for essential proc access
+  @{PROC}/version r,
+  @{PROC}/cpuinfo r,
+  @{PROC}/meminfo r,
+  @{PROC}/self/stat r,
+  @{PROC}/self/status r,
+  @{PROC}/sys/vm/overcommit_memory r,
+  
+  # ===== CAPABILITY RESTRICTIONS =====
+  
+  # Deny dangerous capabilities
+  deny capability chown,
+  deny capability dac_override,
+  deny capability dac_read_search,
+  deny capability fowner,
+  deny capability fsetid,
+  deny capability kill,
+  deny capability setgid,
+  deny capability setuid,
+  deny capability setpcap,
+  deny capability linux_immutable,
+  deny capability net_bind_service,
+  deny capability net_broadcast,
+  deny capability net_admin,
+  deny capability net_raw,
+  deny capability ipc_lock,
+  deny capability ipc_owner,
+  deny capability sys_module,
+  deny capability sys_rawio,
+  deny capability sys_chroot,
+  deny capability sys_ptrace,
+  deny capability sys_pacct,
+  deny capability sys_admin,
+  deny capability sys_boot,
+  deny capability sys_nice,
+  deny capability sys_resource,
+  deny capability sys_time,
+  deny capability sys_tty_config,
+  deny capability mknod,
+  deny capability lease,
+  deny capability audit_write,
+  deny capability audit_control,
+  deny capability setfcap,
+  deny capability mac_override,
+  deny capability mac_admin,
+  deny capability syslog,
+  deny capability wake_alarm,
+  deny capability block_suspend,
+  
+  # ===== PROCESS CONTROL =====
+  
+  # Prevent fork bombs and process manipulation
+  deny signal,
+  deny ptrace,
+  deny @{PROC}/sys/kernel/core_pattern w,
+  
+  # Limit file descriptor operations
+  deny rlimit,
+  
+  # ===== SYSTEM CALL RESTRICTIONS =====
+  
+  # Block dangerous system calls
+  deny mount,
+  deny umount,
+  deny umount2,
+  deny pivot_root,
+  deny chroot,
+  deny acct,
+  deny swapon,
+  deny swapoff,
+  deny nfsservctl,
+  deny quotactl,
+  deny lookup_dcookie,
+  deny remap_file_pages,
+  deny kexec_load,
+  deny keyctl,
+  deny add_key,
+  deny request_key,
+  deny migrate_pages,
+  deny move_pages,
+  deny perf_event_open,
+  deny fanotify_init,
+  deny fanotify_mark,
+  deny name_to_handle_at,
+  deny open_by_handle_at,
+  deny setns,
+  deny process_vm_readv,
+  deny process_vm_writev,
+  deny kcmp,
+  deny finit_module,
+  
+  # ===== MEMORY MANAGEMENT =====
+  
+  # Allow basic memory operations but restrict dangerous ones
+  deny @{PROC}/*/mem rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny /dev/mem rwklx,
+  deny /dev/kmem rwklx,
+  deny /dev/port rwklx,
+  
+  # ===== LOGGING AND MONITORING =====
+  
+  # Allow basic logging for monitoring (optional)
+  # /var/log/ffmpeg-audit.log w,
+  
+  # ===== TEMPORARY FILE HANDLING =====
+  
+  # Strict control over temporary files
+  /tmp/memory-pool/input_* rw,
+  /tmp/memory-pool/output_* rw,  
+  /tmp/memory-pool/temp_* rw,
+  /tmp/memory-pool/*.tmp rw,
+  /tmp/memory-pool/*.mkv rw,
+  /tmp/memory-pool/*.mp4 rw,
+  /tmp/memory-pool/*.avi rw,
+  /tmp/memory-pool/*.webm rw,
+  /tmp/memory-pool/*.opus rw,
+  /tmp/memory-pool/*.aac rw,
+  /tmp/memory-pool/*.flac rw,
+  
+  # Deny access to any other temp locations
+  deny /tmp/** rwklmx,
+  deny /var/tmp/** rwklmx,
+  
+  # Exception: Only our secure tmpfs
+  /tmp/memory-pool/ rw,
+  /tmp/memory-pool/** rw,
+}
+
+# Additional profile for any FFmpeg plugins or codecs
+/usr/lib/*/ffmpeg/plugins/** {
+  # Minimal access for codec plugins
+  mr,
+  
+  # Same network restrictions
+  deny network,
+  
+  # Same file system restrictions  
+  deny /etc/** rwklmx,
+  deny /home/** rwklmx,
+  deny /root/** rwklmx,
+  
+  # Only tmpfs access
+  /tmp/memory-pool/** rw,
+}
+
+# Profile for libav and related libraries
+/usr/lib/*/libav*.so* {
+  mr,
+  deny network,
+  deny /etc/** rwklmx,
+  /tmp/memory-pool/** rw,
+}

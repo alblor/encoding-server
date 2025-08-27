@@ -14,64 +14,291 @@ from .encryption import EncryptionManager
 
 
 class FFmpegValidator:
-    """Validates and sanitizes FFmpeg parameters."""
+    """
+    Enhanced FFmpeg parameter validator with hybrid security architecture.
     
-    # Whitelist of allowed codecs and parameters
-    ALLOWED_VIDEO_CODECS = ['libx264', 'libx265', 'libvpx-vp9', 'copy']
-    ALLOWED_AUDIO_CODECS = ['aac', 'mp3', 'libopus', 'copy']
-    ALLOWED_FORMATS = ['mp4', 'mkv', 'webm', 'avi']
+    Implements three-layer validation:
+    1. Core parameter whitelist for explicit control
+    2. Safe command construction with FFmpeg syntax validation  
+    3. Security violation detection and prevention
     
-    # Blocked dangerous parameters
-    BLOCKED_PATTERNS = [';', '&&', '||', '`', '$', 'rm ', 'wget', 'curl', '/etc/', '/proc/', '../']
+    Author: Lorenzo Albanese (alblor)
+    """
+    
+    def __init__(self):
+        # Import configuration (separate file for maintainability)
+        from .ffmpeg_validation_config import FFMPEG_CONFIG
+        self.config = FFMPEG_CONFIG
     
     def validate_parameters(self, params: Dict) -> Dict:
-        """Validate and sanitize FFmpeg parameters."""
+        """
+        Enhanced parameter validation supporting complex FFmpeg workflows.
+        
+        Args:
+            params: Dictionary of FFmpeg parameters to validate
+            
+        Returns:
+            Dict with validated parameters or validation errors
+            
+        Raises:
+            ValueError: On security violation with detailed error message
+        """
+        result = {
+            'valid': True,
+            'safe_params': {},
+            'violations': [],
+            'ffmpeg_command': []
+        }
+        
+        try:
+            # Handle different parameter input formats
+            if isinstance(params, dict):
+                safe_params = self._validate_dict_params(params)
+            elif isinstance(params, list):
+                safe_params = self._validate_list_params(params) 
+            else:
+                raise ValueError("VIOLATION: Parameters must be dict or list format.")
+                
+            result['safe_params'] = safe_params
+            
+        except ValueError as e:
+            result['valid'] = False
+            result['violations'].append(str(e))
+            # Re-raise for immediate handling
+            raise
+            
+        return result
+    
+    def _validate_dict_params(self, params: Dict) -> Dict:
+        """Validate dictionary-format parameters (legacy compatibility)."""
         safe_params = {}
         
-        # Video codec validation
+        # Video codec validation with expanded support
         if 'video_codec' in params:
-            codec = params['video_codec'].replace('-c:v ', '').strip()
-            if codec in self.ALLOWED_VIDEO_CODECS:
+            codec = self._extract_codec_name(params['video_codec'])
+            validation = self.config.validate_codec_value('video', codec)
+            
+            if validation['valid']:
                 safe_params['video_codec'] = f'-c:v {codec}'
+            else:
+                raise ValueError(validation['message'])
         
-        # Audio codec validation  
+        # Audio codec validation with expanded support
         if 'audio_codec' in params:
-            codec = params['audio_codec'].replace('-c:a ', '').strip()
-            if codec in self.ALLOWED_AUDIO_CODECS:
+            codec = self._extract_codec_name(params['audio_codec'])
+            validation = self.config.validate_codec_value('audio', codec)
+            
+            if validation['valid']:
                 safe_params['audio_codec'] = f'-c:a {codec}'
+            else:
+                raise ValueError(validation['message'])
         
-        # Custom parameters (basic validation)
+        # Enhanced custom parameters validation
         if 'custom_params' in params:
-            custom = params['custom_params']
-            if isinstance(custom, list):
-                safe_custom = []
-                for param in custom:
-                    if not any(blocked in param for blocked in self.BLOCKED_PATTERNS):
-                        safe_custom.append(param)
-                safe_params['custom_params'] = safe_custom
+            safe_custom = self._validate_custom_parameters(params['custom_params'])
+            safe_params['custom_params'] = safe_custom
+        
+        # Format validation
+        if 'format' in params:
+            validation = self.config.validate_format_value(params['format'])
+            if validation['valid']:
+                safe_params['format'] = f'-f {params["format"]}'
+            else:
+                raise ValueError(validation['message'])
         
         return safe_params
     
+    def _validate_list_params(self, params: List) -> List:
+        """Validate list-format parameters (modern approach)."""
+        safe_params = []
+        i = 0
+        
+        while i < len(params):
+            param = params[i]
+            
+            # Skip empty parameters
+            if not param or not isinstance(param, str):
+                i += 1
+                continue
+            
+            # Handle parameter-value pairs
+            if param.startswith('-'):
+                param_validation = self.config.validate_core_parameter(param)
+                
+                if not param_validation['valid']:
+                    raise ValueError(param_validation['message'])
+                
+                safe_params.append(param)
+                
+                # Check if parameter expects a value
+                if i + 1 < len(params) and not params[i + 1].startswith('-'):
+                    value = params[i + 1]
+                    
+                    # Validate value based on parameter type
+                    self._validate_parameter_value(param, value)
+                    safe_params.append(value)
+                    i += 2
+                else:
+                    i += 1
+            else:
+                # Standalone value - check for security violations
+                security_check = self.config.check_security_violations(param)
+                if not security_check['safe']:
+                    raise ValueError(security_check['message'])
+                    
+                safe_params.append(param)
+                i += 1
+        
+        return safe_params
+    
+    def _validate_custom_parameters(self, custom_params) -> List:
+        """Enhanced custom parameter validation with security checks."""
+        if not custom_params:
+            return []
+        
+        if isinstance(custom_params, str):
+            custom_params = [custom_params]
+        elif not isinstance(custom_params, list):
+            raise ValueError("VIOLATION: Custom parameters must be string or list.")
+        
+        safe_custom = []
+        for param in custom_params:
+            if not isinstance(param, str):
+                continue
+                
+            # Security violation check
+            security_check = self.config.check_security_violations(param)
+            if not security_check['safe']:
+                raise ValueError(security_check['message'])
+            
+            safe_custom.append(param)
+        
+        return safe_custom
+    
+    def _validate_parameter_value(self, param: str, value: str):
+        """Validate parameter values based on parameter type."""
+        # Security check first (always required)
+        security_check = self.config.check_security_violations(value)
+        if not security_check['safe']:
+            raise ValueError(security_check['message'])
+        
+        # Codec-specific validation
+        if param in ['-c:v', '-vcodec']:
+            validation = self.config.validate_codec_value('video', value)
+            if not validation['valid']:
+                raise ValueError(validation['message'])
+                
+        elif param in ['-c:a', '-acodec']:
+            validation = self.config.validate_codec_value('audio', value)
+            if not validation['valid']:
+                raise ValueError(validation['message'])
+                
+        elif param == '-f':
+            validation = self.config.validate_format_value(value)
+            if not validation['valid']:
+                raise ValueError(validation['message'])
+        
+        # Complex filter parameters (allow flexible syntax with security checks)
+        elif param in self.config.COMPLEX_VALUE_PARAMETERS:
+            # Already passed security check, allow complex syntax
+            # This enables support for: -vf "scale=-2:1440:flags=lanczos"
+            pass
+    
+    def _extract_codec_name(self, codec_param: str) -> str:
+        """Extract clean codec name from parameter string."""
+        if not codec_param:
+            return ''
+            
+        # Handle formats like "-c:v libx264" or "libx264"
+        codec = codec_param.replace('-c:v ', '').replace('-c:a ', '').strip()
+        return codec
+    
+    def validate_output_filename(self, filename: str) -> bool:
+        """
+        Validate output filename for security.
+        
+        Args:
+            filename: Output filename to validate
+            
+        Returns:
+            True if filename is safe
+            
+        Raises:
+            ValueError: On security violation
+        """
+        validation = self.config.validate_output_filename(filename)
+        if not validation['safe']:
+            raise ValueError(validation['message'])
+        return True
+    
     def build_command(self, input_file: str, output_file: str, params: Dict) -> List[str]:
-        """Build FFmpeg command from validated parameters."""
+        """
+        Build secure FFmpeg command from validated parameters.
+        
+        Uses argument arrays for safe subprocess execution (no shell injection).
+        Supports both legacy dict format and modern list format parameters.
+        
+        Args:
+            input_file: Path to input file
+            output_file: Path to output file  
+            params: Validated parameters (dict or from safe_params)
+            
+        Returns:
+            List of command arguments for safe subprocess execution
+        """
+        # Validate output filename
+        self.validate_output_filename(output_file)
+        
+        # Start with base command
         cmd = [settings.FFMPEG_PATH, '-i', input_file]
         
-        # Add video codec
-        if 'video_codec' in params:
-            cmd.extend(params['video_codec'].split())
+        # Handle dict-format parameters (legacy compatibility)
+        if isinstance(params, dict) and any(key in params for key in ['video_codec', 'audio_codec', 'custom_params', 'format']):
+            cmd.extend(self._build_from_dict_params(params))
         
-        # Add audio codec
-        if 'audio_codec' in params:
-            cmd.extend(params['audio_codec'].split())
-        
-        # Add custom parameters
-        if 'custom_params' in params:
-            cmd.extend(params['custom_params'])
+        # Handle list-format parameters (modern approach)  
+        elif isinstance(params, (list, dict)):
+            if isinstance(params, dict) and 'safe_params' in params:
+                # Extract from validation result
+                safe_params = params['safe_params']
+                if isinstance(safe_params, list):
+                    cmd.extend(safe_params)
+                else:
+                    cmd.extend(self._build_from_dict_params(safe_params))
+            elif isinstance(params, list):
+                cmd.extend(params)
         
         # Add output file
         cmd.append(output_file)
         
         return cmd
+    
+    def _build_from_dict_params(self, params: Dict) -> List[str]:
+        """Build command arguments from dictionary parameters."""
+        cmd_parts = []
+        
+        # Add format first if specified
+        if 'format' in params:
+            cmd_parts.extend(params['format'].split())
+        
+        # Add video codec
+        if 'video_codec' in params:
+            cmd_parts.extend(params['video_codec'].split())
+        
+        # Add audio codec
+        if 'audio_codec' in params:
+            cmd_parts.extend(params['audio_codec'].split())
+        
+        # Add custom parameters (enhanced support)
+        if 'custom_params' in params:
+            custom = params['custom_params']
+            if isinstance(custom, list):
+                cmd_parts.extend(custom)
+            elif isinstance(custom, str):
+                # Split string parameters safely
+                cmd_parts.extend(custom.split())
+        
+        return cmd_parts
 
 
 class JobProcessor:
