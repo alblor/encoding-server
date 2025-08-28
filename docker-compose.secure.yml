@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: api/Dockerfile.secure
     ports:
-      - "8000:8000"
+      - "8443:8443"    # HTTPS port only (HTTP completely disabled)
     
     # SECURITY: Pure tmpfs storage - nothing touches host disk
     tmpfs:
@@ -15,6 +15,10 @@ services:
       - /tmp/memory-pool:size=12g,noexec,nosuid,nodev,noatime
       - /tmp/encrypted-swap:size=16g,noexec,nosuid,nodev,noatime
       - /var/tmp:size=1g,noexec,nosuid,nodev,noatime
+    
+    # SECURITY: Enterprise certificate persistence (production)
+    volumes:
+      - ./certificates/enterprise:/opt/enterprise-certs:ro,consistent
     
     # SECURITY: Memory limits and protection (CPU managed by Proxmox)
     deploy:
@@ -26,11 +30,11 @@ services:
           memory: 16g
           # CPU reservations removed - Proxmox manages CPU allocation
     
-    # SECURITY: Maximum container security hardening with AppArmor isolation
+    # SECURITY: Maximum container security hardening with AppArmor + Seccomp
     security_opt:
       - no-new-privileges:true
       - apparmor=ffmpeg-isolated  # Custom AppArmor profile with network isolation
-      # Note: seccomp profile can be customized for additional syscall filtering
+      - seccomp=security/seccomp/api-server-minimal.json  # Minimal Seccomp syscall filtering - PROVEN WORKING
     
     # SECURITY: Drop all capabilities, add only essential ones for FFmpeg isolation
     cap_drop:
@@ -63,6 +67,9 @@ services:
       - APPARMOR_PROFILE=ffmpeg-isolated  # Force AppArmor profile usage
       - NETWORK_ISOLATION=true           # Enable network isolation checks
       - FFMPEG_SECURITY_LEVEL=maximum    # MAXIMUM security (all requirements must be met)
+      - TLS_ENABLED=true                 # Enable HTTPS/TLS transport security
+      - ENABLE_HTTPS_REDIRECT=false      # HTTP to HTTPS redirect (disabled for development)
+      - SECCOMP_PROFILE=api-server-refined  # Refined Seccomp syscall filtering profile
     
     # SECURITY: Process isolation
     pid: "host"

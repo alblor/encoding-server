@@ -8,6 +8,7 @@ cryptography==41.0.7
 pyjwt[crypto]==2.8.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
+pyOpenSSL==23.3.0
 
 # Database & Queue
 redis==5.0.1

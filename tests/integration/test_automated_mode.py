@@ -22,7 +22,7 @@ class AutomatedModeTester:
         self.tests_dir = tests_dir
         self.media_dir = tests_dir / "data" / "media"
         self.results_dir = tests_dir / "results"
-        self.api_url = "http://localhost:8000"
+        self.api_url = "https://localhost:8443"
         
         # Ensure results directory exists
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,7 @@ class AutomatedModeTester:
             }
             
             upload_start = time.time()
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             upload_time = time.time() - upload_start
             
             if response.status_code != 200:
@@ -71,7 +71,7 @@ class AutomatedModeTester:
             last_progress = -1
             
             while time.time() - poll_start < max_wait:
-                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
                 if status_response.status_code != 200:
                     raise Exception(f"Status check failed: {status_response.text}")
                 
@@ -97,7 +97,7 @@ class AutomatedModeTester:
             
             # Step 4: Download unencrypted result (server handles decryption transparently)
             print(f"    Step 4: Downloading unencrypted result (transparent decryption)...")
-            result_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result")
+            result_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result", verify=False)
             if result_response.status_code != 200:
                 raise Exception(f"Result retrieval failed: {result_response.text}")
             
@@ -272,7 +272,7 @@ def main():
     
     # Check if API is available
     try:
-        response = requests.get(f"{tester.api_url}/health", timeout=5)
+        response = requests.get(f"{tester.api_url}/health", timeout=5, verify=False)
         if response.status_code != 200:
             raise Exception("API health check failed")
         print(f"✅ API is healthy at {tester.api_url}")

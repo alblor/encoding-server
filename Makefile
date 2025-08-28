@@ -1,7 +1,7 @@
 # Secure Media Encoding Server - Enhanced Makefile Command Panel
 # Author: Lorenzo Albanese (alblor)
 
-.PHONY: help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell
+.PHONY: help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell cert-upload cert-status
 
 # Default target
 help:
@@ -17,6 +17,10 @@ help:
 	@echo ""
 	@echo "🧹 Maintenance:"
 	@echo "  cleanup         Clean up containers, volumes, and test data (results too)"
+	@echo ""
+	@echo "📜 Enterprise Certificate Management:"
+	@echo "  cert-upload     Upload persistent enterprise SSL certificate and key"
+	@echo "  cert-status     Check certificate status and validity"
 	@echo ""
 	@echo "📚 Documentation:"
 	@echo "  docs            Show API documentation access points and examples"
@@ -56,30 +60,32 @@ docs:
 	@echo "📚 Secure Media Encoding Server - API Documentation"
 	@echo "Author: Lorenzo Albanese (alblor)"
 	@echo ""
-	@echo "🌐 DOCUMENTATION ACCESS POINTS:"
-	@echo "  📖 Complete API Documentation: http://localhost:8000/v1/docs"
-	@echo "  🚀 System Overview & Quick Start: http://localhost:8000/v1/docs/overview"
-	@echo "  🔐 Dual-Mode Encryption Guide: http://localhost:8000/v1/docs/modes"
-	@echo "  📊 API Endpoints Reference: http://localhost:8000/v1/docs/endpoints"
-	@echo "  🔑 Authentication Guide: http://localhost:8000/v1/docs/auth"
-	@echo "  💡 Workflow Examples: http://localhost:8000/v1/docs/examples"
-	@echo "  ❌ Error Reference: http://localhost:8000/v1/docs/errors"
-	@echo "  🛠️ Client Tools Guide: http://localhost:8000/v1/docs/tools"
+	@echo "🌐 DOCUMENTATION ACCESS POINTS (HTTPS-ONLY):"
+	@echo "  📖 Complete API Documentation: https://localhost:8443/v1/docs"
+	@echo "  🚀 System Overview & Quick Start: https://localhost:8443/v1/docs/overview"
+	@echo "  🔐 Dual-Mode Encryption Guide: https://localhost:8443/v1/docs/modes"
+	@echo "  📊 API Endpoints Reference: https://localhost:8443/v1/docs/endpoints"
+	@echo "  🔑 Authentication Guide: https://localhost:8443/v1/docs/auth"
+	@echo "  💡 Workflow Examples: https://localhost:8443/v1/docs/examples"
+	@echo "  ❌ Error Reference: https://localhost:8443/v1/docs/errors"
+	@echo "  🛠️ Client Tools Guide: https://localhost:8443/v1/docs/tools"
 	@echo ""
 	@echo "🧪 TESTING DOCUMENTATION:"
 	@echo "  make test-docs     # Test all 9 documentation endpoints (auto-discovery)"
 	@echo ""
-	@echo "📋 QUICK EXAMPLES:"
-	@echo '  curl http://localhost:8000/v1/docs | jq                    # Documentation index'
-	@echo '  curl http://localhost:8000/v1/docs/modes | jq              # Encryption modes'
-	@echo '  curl http://localhost:8000/v1/docs/examples | jq           # Workflow examples'
-	@echo '  curl http://localhost:8000/v1/docs/endpoints/submit_job | jq # Job submission docs'
+	@echo "📋 QUICK EXAMPLES (HTTPS-ONLY):"
+	@echo '  curl -k https://localhost:8443/v1/docs | jq                    # Documentation index'
+	@echo '  curl -k https://localhost:8443/v1/docs/modes | jq              # Encryption modes'
+	@echo '  curl -k https://localhost:8443/v1/docs/examples | jq           # Workflow examples'
+	@echo '  curl -k https://localhost:8443/v1/docs/endpoints/submit_job | jq # Job submission docs'
+	@echo '  curl -k https://localhost:8443/v1/security/tls-status | jq     # Security status'
 	@echo ""
 	@echo "💻 BROWSER ACCESS:"
-	@echo "  Open your browser to http://localhost:8000/v1/docs for JSON"
+	@echo "  Open your browser to https://localhost:8443/v1/docs for JSON"
+	@echo "  Accept the self-signed certificate warning (for development)"
 	@echo "  Use 'jq' for pretty formatting or build a frontend interface"
 	@echo ""
-	@echo "⚠️  REQUIREMENT: Run 'make secure-up' first to start the API server"
+	@echo "⚠️  REQUIREMENT: Run 'make secure-up' first to start the HTTPS-only server"
 
 # Test data preparation
 test-prepare:
@@ -151,9 +157,10 @@ secure-up:
 	@echo "🛡️  Maximum Docker security enabled"
 	docker compose -f docker-compose.secure.yml up -d
 	@echo ""
-	@echo "🔒 Secure API available at: http://localhost:8000"
+	@echo "🔒 Secure API available at: https://localhost:8443 (HTTPS-ONLY)"
 	@echo "🛡️  Zero-trust media processing active"
 	@echo "💾 All data confined to RAM + encrypted swap"
+	@echo "🚫 HTTP completely disabled - all connections must use HTTPS"
 
 # Stop secure environment
 secure-down:
@@ -186,3 +193,78 @@ secure-shell:
 	@echo "  make test        - Run all tests (assumes data ready)"
 	@echo "  make test-unit   - Run unit tests only"
 	@echo "Author: Lorenzo Albanese (alblor)"
+
+# =====================================================================
+# ENTERPRISE CERTIFICATE MANAGEMENT SYSTEM  
+# Persistent certificate system for production deployments
+# =====================================================================
+
+# Check certificate status and validity
+cert-status:
+	@echo "🔍 Checking certificate status..."
+	@echo "Getting certificate information from running container..."
+	@curl -k -s https://localhost:8443/v1/security/tls-status | jq -r '"📜 Certificate Status:", "🔒 HTTPS Only Mode: " + (.https_only_mode|tostring), "🌐 TLS Enabled: " + (.tls_enabled|tostring), "🚫 HTTP Disabled: " + (.http_disabled|tostring), "🔄 Auto-Renewal: " + (.automatic_renewal|tostring), "", "📋 Certificate Details:", "📄 Status: " + .certificate.status, "🏢 Subject: " + .certificate.subject, "🏛️  Issuer: " + .certificate.issuer, "🔐 Self-Signed: " + (.certificate.is_self_signed|tostring), "📅 Valid Until: " + .certificate.not_valid_after, "⏰ Days Until Expiry: " + (.certificate.days_until_expiry|tostring), "🔢 Serial: " + .certificate.serial_number, "", "🔒 Security Level: " + .security_level, "⏰ Last Checked: " + .timestamp' 2>/dev/null || echo "❌ Could not retrieve certificate status. Is the server running? (make secure-up)"
+
+# Upload persistent enterprise certificate
+cert-upload:
+	@echo "📜 Persistent Enterprise Certificate Upload System"
+	@echo "Author: Lorenzo Albanese (alblor)"
+	@echo ""
+	@if [ -z "$(CERT)" ] || [ -z "$(KEY)" ]; then \
+		echo "❌ Missing certificate files. Usage:"; \
+		echo "   CERT=path/to/certificate.pem KEY=path/to/private.key make cert-upload"; \
+		echo ""; \
+		echo "📋 REQUIREMENTS:"; \
+		echo "  • Certificate file in PEM format (.pem, .crt, or .cert)"; \
+		echo "  • Private key file in PEM format (.key or .pem)"; \
+		echo "  • Key must match the certificate"; \
+		echo "  • Certificate must be valid (not expired)"; \
+		echo ""; \
+		echo "💡 EXAMPLE:"; \
+		echo '  CERT=./ssl/mydomain.crt KEY=./ssl/mydomain.key make cert-upload'; \
+		echo ""; \
+		echo "🔄 PERSISTENT BEHAVIOR:"; \
+		echo "  • Enterprise certificates survive container restarts"; \
+		echo "  • Automatically loaded on startup (priority over self-signed)"; \
+		echo "  • No manual restart required - immediate activation"; \
+		exit 1; \
+	fi
+	@echo "🔍 Validating certificate files..."
+	@if [ ! -f "$(CERT)" ]; then echo "❌ Certificate file not found: $(CERT)"; exit 1; fi
+	@if [ ! -f "$(KEY)" ]; then echo "❌ Private key file not found: $(KEY)"; exit 1; fi
+	@echo "✅ Certificate files found"
+	@echo "🔐 Validating certificate format and key compatibility..."
+	@openssl x509 -in "$(CERT)" -text -noout > /dev/null 2>&1 || (echo "❌ Invalid certificate format"; exit 1)
+	@openssl rsa -in "$(KEY)" -check -noout > /dev/null 2>&1 || (echo "❌ Invalid private key format"; exit 1)
+	@echo "✅ Certificate format validation passed"
+	@echo "🔍 Checking certificate and key compatibility..."
+	@CERT_MODULUS=$$(openssl x509 -noout -modulus -in "$(CERT)" | openssl md5); \
+	 KEY_MODULUS=$$(openssl rsa -noout -modulus -in "$(KEY)" | openssl md5); \
+	 if [ "$$CERT_MODULUS" != "$$KEY_MODULUS" ]; then \
+	 	echo "❌ Certificate and private key do not match!"; \
+	 	exit 1; \
+	 fi
+	@echo "✅ Certificate and private key compatibility verified"
+	@echo "📋 Certificate Information:"
+	@openssl x509 -in "$(CERT)" -text -noout | grep -E "(Subject:|Issuer:|Not Before|Not After)" | sed 's/^/  /'
+	@echo ""
+	@echo "💾 Installing persistent enterprise certificate..."
+	@mkdir -p ./certificates/enterprise
+	@cp "$(CERT)" ./certificates/enterprise/server.crt
+	@cp "$(KEY)" ./certificates/enterprise/server.key
+	@chmod 644 ./certificates/enterprise/server.crt
+	@chmod 600 ./certificates/enterprise/server.key
+	@echo "✅ Enterprise certificate installed to persistent storage"
+	@echo ""
+	@echo "🔄 Restarting secure environment to activate enterprise certificate..."
+	@make secure-down > /dev/null 2>&1
+	@sleep 2
+	@make secure-up > /dev/null 2>&1
+	@echo ""
+	@echo "⏰ Waiting for server to start with enterprise certificate..."
+	@sleep 10
+	@echo "🔍 Verifying enterprise certificate is active..."
+	@make cert-status
+	@echo ""
+	@echo "🎉 Persistent enterprise certificate deployment completed!"
+	@echo "🔄 Certificate will automatically load on future container restarts"

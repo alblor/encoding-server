@@ -22,7 +22,7 @@ class APIEndpointTester:
         self.media_dir = tests_dir / "data" / "media"
         self.stubs_dir = tests_dir / "data" / "stubs"
         self.results_dir = tests_dir / "results"
-        self.api_url = "http://localhost:8000"
+        self.api_url = "https://localhost:8443"
         
         # Ensure results directory exists
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +33,7 @@ class APIEndpointTester:
     def test_service_info_endpoint(self) -> Dict:
         """Test the root service information endpoint."""
         try:
-            response = requests.get(f"{self.api_url}/")
+            response = requests.get(f"{self.api_url}/", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -67,7 +67,7 @@ class APIEndpointTester:
     def test_health_endpoint(self) -> Dict:
         """Test the health check endpoint."""
         try:
-            response = requests.get(f"{self.api_url}/health")
+            response = requests.get(f"{self.api_url}/health", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -101,7 +101,7 @@ class APIEndpointTester:
     def test_presets_endpoint(self) -> Dict:
         """Test the encoding presets endpoint."""
         try:
-            response = requests.get(f"{self.api_url}/v1/presets")
+            response = requests.get(f"{self.api_url}/v1/presets", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -135,7 +135,7 @@ class APIEndpointTester:
     def test_keypair_generation_endpoint(self) -> Dict:
         """Test the ECDH keypair generation endpoint."""
         try:
-            response = requests.post(f"{self.api_url}/v1/encryption/keypair")
+            response = requests.post(f"{self.api_url}/v1/encryption/keypair", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -184,7 +184,7 @@ class APIEndpointTester:
                 "encryption_mode": encryption_mode
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -219,7 +219,7 @@ class APIEndpointTester:
     def test_job_status_endpoint(self, job_id: str) -> Dict:
         """Test job status retrieval endpoint."""
         try:
-            response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+            response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -258,7 +258,7 @@ class APIEndpointTester:
             start_time = time.time()
             
             while time.time() - start_time < max_wait:
-                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
                 if status_response.status_code == 200:
                     status_data = status_response.json()
                     if status_data["status"] == "completed":
@@ -271,7 +271,7 @@ class APIEndpointTester:
                 raise Exception("Job did not complete within timeout")
             
             # Get result
-            response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result")
+            response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -302,7 +302,7 @@ class APIEndpointTester:
     def test_jobs_list_endpoint(self) -> Dict:
         """Test job listing endpoint."""
         try:
-            response = requests.get(f"{self.api_url}/v1/jobs")
+            response = requests.get(f"{self.api_url}/v1/jobs", verify=False)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}: {response.text}")
@@ -342,7 +342,7 @@ class APIEndpointTester:
         
         # Test 1: Invalid job ID
         try:
-            response = requests.get(f"{self.api_url}/v1/jobs/nonexistent-job-id")
+            response = requests.get(f"{self.api_url}/v1/jobs/nonexistent-job-id", verify=False)
             if response.status_code != 404:
                 raise Exception(f"Expected 404, got {response.status_code}")
             
@@ -371,7 +371,7 @@ class APIEndpointTester:
                 "encryption_mode": "invalid_mode"
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             if response.status_code != 400:
                 raise Exception(f"Expected 400, got {response.status_code}")
             
@@ -552,7 +552,7 @@ def main():
     
     # Check if API is available
     try:
-        response = requests.get(f"{tester.api_url}/health", timeout=5)
+        response = requests.get(f"{tester.api_url}/health", timeout=5, verify=False)
         if response.status_code != 200:
             raise Exception("API health check failed")
         print(f"✅ API is healthy at {tester.api_url}")

@@ -11,6 +11,7 @@ Architecture: Zero-trust with encrypted swap emulation
 import asyncio
 import logging
 import os
+import ssl
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -18,6 +19,8 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 import json
 import io
@@ -26,6 +29,7 @@ from app.config import settings
 from app.secure_jobs import SecureJobProcessor
 from app.encryption import EncryptionManager
 from app.documentation import DocumentationManager
+from app.tls_config import tls_manager
 
 # Configure secure logging
 logging.basicConfig(
@@ -86,6 +90,46 @@ app = FastAPI(
     docs_url="/api/docs" if settings.DEBUG else None,  # Disable docs in production
     redoc_url="/api/redoc" if settings.DEBUG else None
 )
+
+# Security middleware configuration - HTTPS-ONLY MODE
+HTTPS_ONLY_MODE = True  # Always true in production - no HTTP support
+
+# Add trusted host middleware for production security (allow testserver for unit tests)
+app.add_middleware(
+    TrustedHostMiddleware, 
+    allowed_hosts=settings.ALLOWED_HOSTS + ["localhost", "127.0.0.1", "::1", "testserver"]
+)
+
+# No HTTPS redirect middleware needed - we don't serve HTTP at all
+
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add comprehensive security headers to all responses."""
+    response = await call_next(request)
+    
+    # HSTS (HTTP Strict Transport Security) - always enabled in HTTPS-only mode
+    if HTTPS_ONLY_MODE:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    
+    # Content security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=(), ambient-light-sensor=()"
+    
+    # Content Security Policy for API-only usage
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none';"
+    
+    # Server identification
+    response.headers["Server"] = "SecureMediaEncoder/2.0"
+    
+    # Secure cookie settings - always enabled in HTTPS-only mode
+    if HTTPS_ONLY_MODE:
+        response.headers["Set-Cookie"] = response.headers.get("Set-Cookie", "").replace("HttpOnly", "HttpOnly; Secure; SameSite=Strict")
+    
+    return response
 
 # Security: Minimal CORS for development only
 if settings.DEBUG:
@@ -583,6 +627,25 @@ async def get_client_tools_documentation():
         raise HTTPException(status_code=500, detail="Failed to retrieve client tools documentation")
 
 
+@app.get("/v1/security/tls-status")
+async def tls_status():
+    """Get current TLS configuration and certificate status."""
+    try:
+        cert_info = tls_manager.get_certificate_info()
+        return {
+            "https_only_mode": HTTPS_ONLY_MODE,
+            "tls_enabled": True,  # Always true in HTTPS-only mode
+            "http_disabled": True,  # HTTP completely disabled
+            "certificate": cert_info,
+            "security_level": os.getenv("FFMPEG_SECURITY_LEVEL", "unknown"),
+            "automatic_renewal": True,  # Certificate auto-renewal enabled
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+    except Exception as e:
+        logger.error(f"TLS status error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve TLS status")
+
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -594,10 +657,31 @@ if __name__ == "__main__":
     logger.info("🚀 Starting Ultra-Secure Media Encoding Server")
     logger.info("🔒 Zero-trust mode with encrypted virtual memory")
     
+    # SECURITY: HTTPS-ONLY MODE - No HTTP support
+    logger.info("🔒 Starting in HTTPS-ONLY mode - HTTP completely disabled")
+    
+    # Force HTTPS port regardless of configuration
+    https_port = 8443
+    
+    # Get SSL context with automatic certificate management
+    ssl_context = tls_manager.get_ssl_context()
+    if ssl_context is None:
+        logger.error("❌ CRITICAL: Failed to create SSL context - cannot start without HTTPS")
+        logger.error("💡 Check certificate generation permissions and tmpfs mount")
+        exit(1)
+    
+    logger.info(f"🔐 HTTPS server starting on port {https_port} with TLS certificate")
+    logger.info("🛡️  HTTP is completely disabled - all connections must use HTTPS")
+    
+    # Start HTTPS-only server
     uvicorn.run(
         app,
         host=settings.HOST,
-        port=settings.PORT,
+        port=https_port,
+        ssl_keyfile=str(tls_manager.key_file),
+        ssl_certfile=str(tls_manager.cert_file),
         log_level="warning" if not settings.DEBUG else "info",
-        access_log=settings.DEBUG
+        access_log=settings.DEBUG,
+        server_header=False,  # Don't reveal uvicorn version
+        date_header=False     # Don't reveal system time
     )

@@ -1,0 +1,71 @@
+{
+  "comment": "Minimal Seccomp profile - Block only the most critical security threats",
+  "author": "Lorenzo Albanese (alblor)",
+  "version": "1.0.0",
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "architectures": [
+    "SCMP_ARCH_X86_64",
+    "SCMP_ARCH_X86",
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "comment": "CRITICAL SECURITY: Process debugging and injection - KILL IMMEDIATELY",
+      "names": [
+        "ptrace",
+        "process_vm_readv",
+        "process_vm_writev"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS"
+    },
+    {
+      "comment": "CRITICAL SECURITY: BPF and performance monitoring - KILL IMMEDIATELY",
+      "names": [
+        "perf_event_open",
+        "bpf",
+        "lookup_dcookie"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS"
+    },
+    {
+      "comment": "CRITICAL SECURITY: Kernel module operations - KILL IMMEDIATELY",
+      "names": [
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "create_module",
+        "query_module"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS"
+    },
+    {
+      "comment": "CRITICAL SECURITY: Kernel loading - KILL IMMEDIATELY",
+      "names": [
+        "kexec_load",
+        "kexec_file_load"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS"
+    },
+    {
+      "comment": "CRITICAL SECURITY: Direct hardware access - KILL IMMEDIATELY", 
+      "names": [
+        "iopl",
+        "ioperm"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS"
+    },
+    {
+      "comment": "HIGH SECURITY: System administration - BLOCKED",
+      "names": [
+        "mount",
+        "umount",
+        "umount2",
+        "pivot_root",
+        "chroot",
+        "reboot"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}

@@ -25,7 +25,7 @@ class EncryptionStubTester:
         self.stubs_dir = tests_dir / "data" / "stubs"
         self.results_dir = tests_dir / "results"
         self.client_tools_dir = Path(__file__).parent.parent.parent / "client-tools"
-        self.api_url = "http://localhost:8000"
+        self.api_url = "https://localhost:8443"
         
         # Ensure results directory exists
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +146,7 @@ class EncryptionStubTester:
                 }
                 
                 start_time = time.time()
-                response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+                response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
                 submit_time = time.time() - start_time
                 
                 if response.status_code != 200:
@@ -162,7 +162,7 @@ class EncryptionStubTester:
                 ffmpeg_validation_passed = False
                 
                 while time.time() - poll_start < max_wait:
-                    status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+                    status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
                     if status_response.status_code != 200:
                         raise Exception(f"Status check failed: {status_response.text}")
                     
@@ -205,7 +205,7 @@ class EncryptionStubTester:
                 elif job_completed:
                     # Actual successful processing (unlikely with stub data, but handle gracefully)
                     # Get result (should be decrypted automatically in automated mode)
-                    result_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result")
+                    result_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}/result", verify=False)
                     if result_response.status_code != 200:
                         raise Exception(f"Result retrieval failed: {result_response.text}")
                     
@@ -277,7 +277,7 @@ def main():
     
     # Check if API is available
     try:
-        response = requests.get(f"{tester.api_url}/health", timeout=5)
+        response = requests.get(f"{tester.api_url}/health", timeout=5, verify=False)
         if response.status_code != 200:
             raise Exception("API health check failed")
     except Exception as e:

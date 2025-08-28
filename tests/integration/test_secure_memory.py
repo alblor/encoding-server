@@ -25,7 +25,7 @@ class SecureMemoryValidator:
     def __init__(self, tests_dir: Path):
         self.tests_dir = tests_dir
         self.results_dir = tests_dir / "results"
-        self.api_url = "http://localhost:8000"
+        self.api_url = "https://localhost:8443"
         self.memory_threshold = 4 * 1024 * 1024 * 1024  # 4GB
         
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -46,7 +46,7 @@ class SecureMemoryValidator:
                 "encryption_mode": "automated"
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             if response.status_code != 200:
                 raise Exception(f"Job submission failed: {response.text}")
             
@@ -54,7 +54,7 @@ class SecureMemoryValidator:
             job_id = job_data["job_id"]
             
             # Get job status to check memory mode
-            status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+            status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
             if status_response.status_code != 200:
                 raise Exception(f"Status check failed: {status_response.text}")
             
@@ -68,7 +68,7 @@ class SecureMemoryValidator:
             max_wait = 30
             start_time = time.time()
             while time.time() - start_time < max_wait:
-                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
                 if status_response.status_code == 200:
                     status_data = status_response.json()
                     if status_data["status"] == "completed":
@@ -113,7 +113,7 @@ class SecureMemoryValidator:
                 "file_size_hint": str(test_size)  # Hint for routing logic
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             if response.status_code != 200:
                 # This might fail in current implementation - that's expected for testing
                 # The important thing is to validate the routing logic exists
@@ -148,7 +148,7 @@ class SecureMemoryValidator:
                 "encryption_mode": "automated"
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             if response.status_code != 200:
                 raise Exception(f"Job submission failed: {response.text}")
             
@@ -159,7 +159,7 @@ class SecureMemoryValidator:
             max_wait = 30
             start_time = time.time()
             while time.time() - start_time < max_wait:
-                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
                 if status_response.status_code == 200:
                     status_data = status_response.json()
                     if status_data["status"] in ["completed", "failed"]:
@@ -168,7 +168,7 @@ class SecureMemoryValidator:
             
             # Check that no temporary files exist (this would require container inspection)
             # For now, we validate that the API properly reports job completion
-            final_status = requests.get(f"{self.api_url}/v1/jobs/{job_id}")
+            final_status = requests.get(f"{self.api_url}/v1/jobs/{job_id}", verify=False)
             if final_status.status_code != 200:
                 raise Exception("Job status not accessible after completion")
             
@@ -207,10 +207,10 @@ class SecureMemoryValidator:
                 "encryption_mode": "automated"
             }
             
-            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data)
+            response = requests.post(f"{self.api_url}/v1/jobs", files=files, data=data, verify=False)
             if response.status_code == 200:
                 job_data = response.json()
-                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_data['job_id']}")
+                status_response = requests.get(f"{self.api_url}/v1/jobs/{job_data['job_id']}", verify=False)
                 if status_response.status_code == 200:
                     status_data = status_response.json()
                     results.append(f"Small file memory mode: {status_data.get('memory_mode', 'unknown')}")
@@ -236,14 +236,14 @@ class SecureMemoryValidator:
         
         try:
             # Check service info for secure configuration
-            response = requests.get(f"{self.api_url}/")
+            response = requests.get(f"{self.api_url}/", verify=False)
             if response.status_code != 200:
                 raise Exception("Service info not accessible")
             
             service_info = response.json()
             
             # Check health endpoint for security indicators
-            health_response = requests.get(f"{self.api_url}/health")
+            health_response = requests.get(f"{self.api_url}/health", verify=False)
             if health_response.status_code != 200:
                 raise Exception("Health check not accessible")
             
@@ -333,7 +333,7 @@ def main():
     
     # Check if API is available
     try:
-        response = requests.get(f"{validator.api_url}/health", timeout=5)
+        response = requests.get(f"{validator.api_url}/health", timeout=5, verify=False)
         if response.status_code != 200:
             raise Exception("API health check failed")
         print(f"✅ Secure API is healthy at {validator.api_url}")

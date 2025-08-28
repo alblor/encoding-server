@@ -16,7 +16,7 @@ import requests
 import traceback
 
 # Configuration
-BASE_URL = "http://localhost:8000"
+BASE_URL = "https://localhost:8443"
 RESULTS_FILE = "tests/results/documentation_api_results.json"
 
 class DocumentationAPITester:
@@ -107,7 +107,7 @@ class DocumentationAPITester:
             print("🔍 Dynamically discovering ALL documentation endpoints from live server...")
             
             # Test base docs endpoint first
-            base_response = requests.get(f"{self.base_url}/v1/docs", timeout=10)
+            base_response = requests.get(f"{self.base_url}/v1/docs", timeout=10, verify=False)
             if base_response.status_code != 200:
                 print(f"❌ Failed to fetch docs index: {base_response.status_code}")
                 return False
@@ -135,7 +135,7 @@ class DocumentationAPITester:
                     if path and title:
                         # Test if endpoint actually exists
                         try:
-                            test_response = requests.get(f"{self.base_url}{path}", timeout=5)
+                            test_response = requests.get(f"{self.base_url}{path}", timeout=5, verify=False)
                             if test_response.status_code == 200:
                                 self.discovered_endpoints.append({
                                     "path": path,
@@ -150,7 +150,7 @@ class DocumentationAPITester:
             
             # Discover individual endpoint documentation paths
             try:
-                endpoints_list_response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10)
+                endpoints_list_response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10, verify=False)
                 if endpoints_list_response.status_code == 200:
                     endpoints_data = endpoints_list_response.json()
                     if "manpage" in endpoints_data and "endpoints" in endpoints_data["manpage"]:
@@ -164,7 +164,7 @@ class DocumentationAPITester:
                             if endpoint_id:
                                 try:
                                     doc_path = f"/v1/docs/endpoints/{endpoint_id}"
-                                    doc_response = requests.get(f"{self.base_url}{doc_path}", timeout=5)
+                                    doc_response = requests.get(f"{self.base_url}{doc_path}", timeout=5, verify=False)
                                     if doc_response.status_code == 200:
                                         working_endpoint_docs += 1
                                 except Exception:
@@ -206,7 +206,7 @@ class DocumentationAPITester:
                 return
             
             # Test the endpoint
-            response = requests.get(f"{self.base_url}{path}", timeout=10)
+            response = requests.get(f"{self.base_url}{path}", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test(title, False, f"Status code: {response.status_code}")
@@ -291,7 +291,7 @@ class DocumentationAPITester:
         """Test individual endpoint documentation for all API endpoints."""
         try:
             # Get list of API endpoints from the endpoints documentation
-            response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10, verify=False)
             if response.status_code != 200:
                 self.log_test("Individual Endpoint Documentation", False, 
                             f"Cannot fetch endpoints list: {response.status_code}")
@@ -311,7 +311,7 @@ class DocumentationAPITester:
                 endpoint_id = endpoint.get("id", "")
                 if endpoint_id:
                     try:
-                        doc_response = requests.get(f"{self.base_url}/v1/docs/endpoints/{endpoint_id}", timeout=10)
+                        doc_response = requests.get(f"{self.base_url}/v1/docs/endpoints/{endpoint_id}", timeout=10, verify=False)
                         if doc_response.status_code == 200:
                             doc_data = doc_response.json()
                             # Basic validation
@@ -328,7 +328,7 @@ class DocumentationAPITester:
             
             # Test 404 behavior
             try:
-                response = requests.get(f"{self.base_url}/v1/docs/endpoints/nonexistent", timeout=10)
+                response = requests.get(f"{self.base_url}/v1/docs/endpoints/nonexistent", timeout=10, verify=False)
                 if response.status_code == 404:
                     self.log_test("Endpoint Doc (404 test)", True, "Correctly returns 404 for invalid endpoint")
                 else:
@@ -346,7 +346,7 @@ class DocumentationAPITester:
     def test_documentation_index(self):
         """Test GET /v1/docs - Documentation index."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Documentation Index", False, f"Status code: {response.status_code}")
@@ -390,7 +390,7 @@ class DocumentationAPITester:
     def test_system_overview(self):
         """Test GET /v1/docs/overview - System overview."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/overview", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/overview", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("System Overview", False, f"Status code: {response.status_code}")
@@ -434,7 +434,7 @@ class DocumentationAPITester:
     def test_encryption_modes_guide(self):
         """Test GET /v1/docs/modes - Encryption modes guide."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/modes", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/modes", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Encryption Modes Guide", False, f"Status code: {response.status_code}")
@@ -480,7 +480,7 @@ class DocumentationAPITester:
     def test_endpoints_list(self):
         """Test GET /v1/docs/endpoints - Endpoints list."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Endpoints List", False, f"Status code: {response.status_code}")
@@ -538,7 +538,7 @@ class DocumentationAPITester:
         
         for endpoint_id in endpoint_ids:
             try:
-                response = requests.get(f"{self.base_url}/v1/docs/endpoints/{endpoint_id}", timeout=10)
+                response = requests.get(f"{self.base_url}/v1/docs/endpoints/{endpoint_id}", timeout=10, verify=False)
                 
                 if response.status_code != 200:
                     self.log_test(f"Endpoint Doc ({endpoint_id})", False, 
@@ -576,7 +576,7 @@ class DocumentationAPITester:
         
         # Test invalid endpoint ID (should return 404)
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/endpoints/nonexistent", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/endpoints/nonexistent", timeout=10, verify=False)
             
             if response.status_code == 404:
                 self.log_test("Endpoint Doc (404 test)", True, "Correctly returns 404 for invalid endpoint")
@@ -597,7 +597,7 @@ class DocumentationAPITester:
     def test_authentication_guide(self):
         """Test GET /v1/docs/auth - Authentication guide."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/auth", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/auth", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Authentication Guide", False, f"Status code: {response.status_code}")
@@ -634,7 +634,7 @@ class DocumentationAPITester:
     def test_workflow_examples(self):
         """Test GET /v1/docs/examples - Workflow examples."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/examples", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/examples", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Workflow Examples", False, f"Status code: {response.status_code}")
@@ -677,7 +677,7 @@ class DocumentationAPITester:
     def test_error_reference(self):
         """Test GET /v1/docs/errors - Error reference."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/errors", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/errors", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Error Reference", False, f"Status code: {response.status_code}")
@@ -723,7 +723,7 @@ class DocumentationAPITester:
     def test_client_tools_documentation(self):
         """Test GET /v1/docs/tools - Client tools documentation."""
         try:
-            response = requests.get(f"{self.base_url}/v1/docs/tools", timeout=10)
+            response = requests.get(f"{self.base_url}/v1/docs/tools", timeout=10, verify=False)
             
             if response.status_code != 200:
                 self.log_test("Client Tools Documentation", False, f"Status code: {response.status_code}")
@@ -825,7 +825,7 @@ def main():
     try:
         # Verify server is running
         try:
-            response = requests.get(f"{BASE_URL}/health", timeout=5)
+            response = requests.get(f"{BASE_URL}/health", timeout=5, verify=False)
             if response.status_code != 200:
                 print(f"❌ Server health check failed: {response.status_code}")
                 print("🔧 Please ensure secure server is running: make secure-up")
