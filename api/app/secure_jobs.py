@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Any
 from .secure_memory import SecureFile, secure_memory_manager
 from .jobs import FFmpegValidator
 from .encryption import EncryptionManager
+from .ffmpeg_progress import FFmpegProgressParser
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class SecureJobProcessor:
     def __init__(self, encryption_manager: EncryptionManager = None):
         self.encryption_manager = encryption_manager or EncryptionManager()
         self.ffmpeg_validator = FFmpegValidator()
+        self.progress_parser = FFmpegProgressParser()
         self.jobs: Dict[str, Dict] = {}
         self.job_lock = asyncio.Lock()
         
@@ -77,7 +79,7 @@ class SecureJobProcessor:
             # Validate FFmpeg parameters for security
             validated_params = self.ffmpeg_validator.validate_parameters(params)
             
-            # Create job record
+            # Create job record with enhanced progress tracking
             job_record = {
                 "id": job_id,
                 "status": "queued",
@@ -88,7 +90,20 @@ class SecureJobProcessor:
                 "message": "Job queued for processing",
                 "file_size": len(file_data),
                 "memory_mode": "encrypted_swap" if len(file_data) > self.memory_threshold else "ram",
-                "decryption_password": decryption_password
+                "decryption_password": decryption_password,
+                # Enhanced progress tracking fields
+                "progress_details": {
+                    "current_time": None,
+                    "current_time_str": "00:00:00",
+                    "total_duration": None,
+                    "processing_duration": None,
+                    "fps": None,
+                    "speed": None,
+                    "eta": None,
+                    "frame": None,
+                    "has_time_cuts": False,
+                    "start_offset": 0.0
+                }
             }
             
             async with self.job_lock:
@@ -189,6 +204,46 @@ class SecureJobProcessor:
                 # For automated mode, data is unencrypted - will be encrypted transparently
                 logger.info(f"Job {job_id}: Processing with transparent encryption")
             
+            # ENHANCED PROGRESS TRACKING: Extract media duration and setup progress parser
+            await self._update_job_status(job_id, "processing", "Analyzing media duration and parameters", 30)
+            
+            # Initialize progress parser for this job
+            progress_parser = FFmpegProgressParser()
+            
+            # Extract total duration using ffprobe
+            total_duration = await progress_parser.get_media_duration(str(actual_input_path))
+            
+            # Parse FFmpeg parameters for time-based cuts
+            safe_params = params.get('safe_params', {}) if isinstance(params, dict) else params
+            if isinstance(safe_params, dict) and 'custom_params' in safe_params:
+                ffmpeg_params = safe_params['custom_params']
+            elif isinstance(safe_params, list):
+                ffmpeg_params = safe_params
+            else:
+                ffmpeg_params = []
+            
+            time_info = progress_parser.parse_time_parameters(ffmpeg_params)
+            
+            # Update job record with duration and time information
+            async with self.job_lock:
+                if job_id in self.jobs:
+                    self.jobs[job_id]["progress_details"].update({
+                        "total_duration": total_duration,
+                        "processing_duration": time_info.get("processing_duration"),
+                        "start_offset": time_info.get("start_time", 0.0),
+                        "has_time_cuts": time_info.get("start_time", 0) > 0 or time_info.get("duration") is not None or time_info.get("end_time") is not None
+                    })
+                    # Store progress parser instance in job for monitoring
+                    self.jobs[job_id]["_progress_parser"] = progress_parser
+            
+            duration_msg = f"Media duration: {progress_parser.format_duration(total_duration)}"
+            if time_info.get("processing_duration"):
+                duration_msg += f", Processing: {progress_parser.format_duration(time_info['processing_duration'])}"
+            if time_info.get("has_time_cuts", False):
+                duration_msg += f" (with time cuts from {progress_parser.format_duration(time_info.get('start_time', 0))})"
+            
+            logger.info(f"Job {job_id}: {duration_msg}")
+            
             await self._update_job_status(job_id, "processing", "Starting FFmpeg processing", 40)
             
             # Build FFmpeg command with secure file paths
@@ -204,7 +259,7 @@ class SecureJobProcessor:
             if not success:
                 raise Exception("FFmpeg processing failed")
             
-            await self._update_job_status(job_id, "processing", "Reading processed output", 80)
+            await self._update_job_status(job_id, "processing", "Reading processed output", 90)
             
             # Read processed output from secure storage
             if not Path(output_file_path).exists():
@@ -280,21 +335,40 @@ class SecureJobProcessor:
                 shell=False      # Ensure no shell interpretation
             )
             
-            # Monitor progress
+            # Monitor progress concurrently with FFmpeg execution
             progress_task = asyncio.create_task(
                 self._monitor_ffmpeg_progress(job_id, process)
             )
             
-            # Wait for completion
-            stdout, stderr = await process.communicate()
-            progress_task.cancel()
+            # Wait for BOTH FFmpeg completion AND progress monitoring to finish
+            try:
+                await asyncio.gather(
+                    process.wait(),          # Wait for FFmpeg to finish
+                    progress_task            # Wait for progress monitoring to finish
+                )
+            except asyncio.CancelledError:
+                # If cancelled, make sure to clean up
+                if not process.returncode:
+                    process.terminate()
+                    await process.wait()
+                raise
+            
+            # Read any remaining stdout data (stderr is handled by monitoring task)
+            if process.stdout:
+                try:
+                    stdout = await asyncio.wait_for(process.stdout.read(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    stdout = b""
+            else:
+                stdout = b""
             
             if process.returncode == 0:
                 logger.info(f"Job {job_id}: FFmpeg completed successfully")
                 return True
             else:
                 logger.error(f"Job {job_id}: FFmpeg failed with code {process.returncode}")
-                logger.error(f"Job {job_id}: FFmpeg stderr: {stderr.decode()}")
+                # stderr is handled by monitoring task, so we log what we can
+                logger.error(f"Job {job_id}: Check job progress details for error information")
                 return False
                 
         except Exception as e:
@@ -637,19 +711,171 @@ class SecureJobProcessor:
         return None
     
     async def _monitor_ffmpeg_progress(self, job_id: str, process: asyncio.subprocess.Process) -> None:
-        """Monitor FFmpeg progress and update job status."""
+        """Monitor FFmpeg progress with real-time stderr parsing and granular updates."""
+        progress_parser = None
+        last_update_time = 0
+        update_interval = 0.1  # Update every 100ms for smooth frontend progress
+        
         try:
-            progress = 45  # Start after initial setup
+            # Get the progress parser for this job
+            async with self.job_lock:
+                if job_id in self.jobs:
+                    progress_parser = self.jobs[job_id].get("_progress_parser")
+            
+            if not progress_parser:
+                logger.warning(f"Job {job_id}: No progress parser available, falling back to basic monitoring")
+                # Fallback to basic progress monitoring
+                progress = 40
+                while process.returncode is None:
+                    await asyncio.sleep(1)
+                    progress = min(progress + 1, 89)  # Max at 89% to leave room for finalization
+                    await self._update_job_status(
+                        job_id, "processing", "Processing media (basic monitoring)", progress
+                    )
+                return
+            
+            logger.debug(f"Progress monitor started for job {job_id}")
+            
+            # Buffer for partial lines
+            line_buffer = ""
+            lines_processed = 0
+            
             while process.returncode is None:
-                await asyncio.sleep(2)
-                progress = min(progress + 5, 75)  # Increment up to 75%
-                await self._update_job_status(
-                    job_id, "processing", f"Processing media (FFmpeg running)", progress
-                )
+                try:
+                    # Read stderr with larger buffer to avoid truncation
+                    try:
+                        stderr_data = await asyncio.wait_for(
+                            process.stderr.read(4096), timeout=0.5
+                        )
+                    except asyncio.TimeoutError:
+                        # No data available, continue monitoring
+                        await asyncio.sleep(0.1)
+                        continue
+                    
+                    if not stderr_data:
+                        # No more data, process might be finishing
+                        await asyncio.sleep(0.1)
+                        continue
+                    
+                    # Decode stderr data and add to buffer
+                    try:
+                        decoded_data = stderr_data.decode('utf-8', errors='ignore')
+                        line_buffer += decoded_data
+                        
+                        # Debug log first few data reads  
+                        if lines_processed < 10:
+                            logger.debug(f"Stderr data received for job {job_id}: {len(stderr_data)} bytes")
+                        
+                    except UnicodeDecodeError:
+                        # Skip malformed data
+                        continue
+                    
+                    # Process complete lines - handle both \n and \r (FFmpeg uses \r for progress)
+                    # Split on both newline and carriage return
+                    lines = line_buffer.replace('\r', '\n').split('\n')
+                    line_buffer = lines[-1]  # Keep partial line for next iteration
+                    
+                    # Debug log first few line processing
+                    if lines_processed < 5 and len(lines) > 1:
+                        logger.debug(f"Job {job_id}: Processing {len(lines)-1} complete lines")
+                        lines_processed += 1
+                    
+                    for line in lines[:-1]:  # Process all complete lines
+                        clean_line = line.strip()
+                        if not clean_line:
+                            continue
+                        
+                        # Debug: Log every line we're trying to parse (first 15 lines)
+                        if lines_processed < 15:
+                            logger.debug(f"Parsing line for job {job_id}: {repr(clean_line[:100])}")
+                        
+                        # Parse progress from this line
+                        progress_data = progress_parser.parse_progress_line(clean_line)
+                        
+                        if progress_data:
+                            frame = progress_data.get('frame', 0)
+                            fps = progress_data.get('fps', 'N/A')
+                            time_str = progress_data.get('current_time_str', '00:00:00')
+                            speed = progress_data.get('speed', 'N/A')
+                            progress = progress_data.get('progress_percent', 0)
+                            
+                            logger.debug(f"Progress parsed for job {job_id}: frame={frame} fps={fps} time={time_str} speed={speed} progress={progress:.1f}%")
+                            
+                            current_time = time.time()
+                            # Rate limit updates to avoid overwhelming the frontend (50ms updates)
+                            if current_time - last_update_time >= 0.05:
+                                await self._update_job_progress(job_id, progress_data)
+                                last_update_time = current_time
+                                logger.debug(f"Progress updated for job {job_id}: {progress:.1f}%")
+                        else:
+                            if lines_processed < 15:
+                                logger.debug(f"No progress data in line for job {job_id}: {clean_line[:80]}")
+                        
+                        lines_processed += 1
+                    
+                    # Small delay to prevent busy waiting
+                    await asyncio.sleep(0.05)
+                    
+                except Exception as e:
+                    logger.debug(f"Job {job_id}: Progress parsing error: {e}")
+                    # Continue monitoring even if individual parsing fails
+                    await asyncio.sleep(0.1)
+            
+            logger.debug(f"Job {job_id}: FFmpeg process completed, progress monitoring ended")
+            
         except asyncio.CancelledError:
-            pass  # Normal cancellation when FFmpeg completes
+            logger.debug(f"Job {job_id}: Progress monitoring cancelled")
         except Exception as e:
             logger.warning(f"Job {job_id}: Progress monitoring error: {e}")
+    
+    async def _update_job_progress(self, job_id: str, progress_data: Dict) -> None:
+        """Update job with detailed progress information."""
+        try:
+            async with self.job_lock:
+                if job_id not in self.jobs:
+                    return
+                
+                job = self.jobs[job_id]
+                
+                # Update main progress percentage - map FFmpeg progress (0-100%) to encoding phase (40-90%)
+                if progress_data.get("progress_percent") is not None:
+                    ffmpeg_progress = progress_data["progress_percent"]
+                    # Linear mapping: 0-100% FFmpeg → 40-90% overall progress
+                    job["progress"] = min(40 + (ffmpeg_progress * 0.5), 90)
+                
+                # Update detailed progress information
+                progress_details = job["progress_details"]
+                progress_details.update({
+                    "current_time": progress_data.get("current_time"),
+                    "current_time_str": progress_data.get("current_time_str", "00:00:00"),
+                    "fps": progress_data.get("fps"),
+                    "speed": progress_data.get("speed"),
+                    "eta": progress_data.get("eta"),
+                    "frame": progress_data.get("frame")
+                })
+                
+                # Update job message with current metrics
+                fps_str = f"{progress_data.get('fps', 0):.1f} fps" if progress_data.get('fps') else ""
+                speed_str = f"{progress_data.get('speed', 0):.1f}x" if progress_data.get('speed') else ""
+                time_str = progress_data.get('current_time_str', '00:00:00')
+                
+                status_parts = [f"Processing at {time_str}"]
+                if fps_str and speed_str:
+                    status_parts.append(f"({fps_str}, {speed_str})")
+                elif fps_str:
+                    status_parts.append(f"({fps_str})")
+                elif speed_str:
+                    status_parts.append(f"({speed_str})")
+                
+                if progress_data.get("eta"):
+                    status_parts.append(f"ETA: {progress_data['eta']}")
+                
+                job["message"] = " ".join(status_parts)
+                
+                logger.debug(f"Job {job_id}: Progress {progress_data.get('progress_percent', 0):.1f}% - {job['message']}")
+                
+        except Exception as e:
+            logger.warning(f"Job {job_id}: Failed to update progress: {e}")
     
     async def _handle_output_encryption(self, job_id: str, output_data: bytes, encryption_mode: str) -> bytes:
         """Handle output encryption based on mode."""
@@ -782,15 +1008,30 @@ class SecureJobProcessor:
             return None
     
     def list_jobs(self) -> List[Dict]:
-        """List all jobs with basic information."""
-        return [
-            {
+        """List all jobs with basic information and enhanced progress details."""
+        job_list = []
+        for job in self.jobs.values():
+            progress_details = job.get("progress_details", {})
+            
+            # Build job summary with enhanced progress information
+            job_summary = {
                 "id": job["id"],
                 "status": job["status"],
                 "created_at": job["created_at"],
                 "encryption_mode": job["encryption_mode"],
                 "progress": job["progress"],
-                "memory_mode": job.get("memory_mode", "unknown")
+                "memory_mode": job.get("memory_mode", "unknown"),
+                "message": job.get("message", ""),
+                # Enhanced progress metrics
+                "current_time": progress_details.get("current_time_str", "00:00:00"),
+                "total_duration": progress_details.get("total_duration"),
+                "processing_duration": progress_details.get("processing_duration"),
+                "fps": progress_details.get("fps"),
+                "speed": progress_details.get("speed"),
+                "eta": progress_details.get("eta"),
+                "has_time_cuts": progress_details.get("has_time_cuts", False)
             }
-            for job in self.jobs.values()
-        ]
+            
+            job_list.append(job_summary)
+        
+        return job_list

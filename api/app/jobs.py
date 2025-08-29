@@ -249,8 +249,8 @@ class FFmpegValidator:
         # Validate output filename
         self.validate_output_filename(output_file)
         
-        # Start with base command
-        cmd = [settings.FFMPEG_PATH, '-i', input_file]
+        # Start with base command with progress output enabled
+        cmd = [settings.FFMPEG_PATH, '-stats', '-loglevel', 'error', '-i', input_file]
         
         # Handle dict-format parameters (legacy compatibility)
         if isinstance(params, dict) and any(key in params for key in ['video_codec', 'audio_codec', 'custom_params', 'format']):

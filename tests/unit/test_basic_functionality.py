@@ -176,7 +176,7 @@ class TestFFmpegValidator:
         # Use relative paths to avoid absolute path security violation
         cmd = ffmpeg_validator.build_command('input.mp4', 'output.mp4', params)
         
-        expected_parts = ['ffmpeg', '-i', 'input.mp4', '-c:v', 'libx264', '-c:a', 'copy', '-preset', 'medium', 'output.mp4']
+        expected_parts = ['ffmpeg', '-stats', '-loglevel', 'error', '-i', 'input.mp4', '-c:v', 'libx264', '-c:a', 'copy', '-preset', 'medium', 'output.mp4']
         assert cmd == expected_parts
 
 

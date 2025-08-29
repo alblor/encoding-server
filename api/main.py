@@ -25,18 +25,26 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import json
 import io
 
+# Configure logging BEFORE any app imports to ensure basicConfig takes effect
+logging.basicConfig(
+    level=logging.DEBUG,  # Temporarily hardcode for initial setup
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Import app modules AFTER logging is configured
 from app.config import settings
 from app.secure_jobs import SecureJobProcessor
 from app.encryption import EncryptionManager
 from app.documentation import DocumentationManager
 from app.tls_config import tls_manager
 
-# Configure secure logging
-logging.basicConfig(
-    level=logging.WARNING if not settings.DEBUG else logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# After imports, update level from settings and create main logger
+logging.getLogger().setLevel(settings.get_log_level())
+for handler in logging.getLogger().handlers:
+    handler.setLevel(settings.get_log_level())
+
 logger = logging.getLogger(__name__)
+logger.info(f"🔧 Logging configured - LOG_LEVEL={settings.LOG_LEVEL} (level={settings.get_log_level()})")
 
 
 @asynccontextmanager
@@ -189,6 +197,7 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Secure health check endpoint."""
+    
     # Check secure memory system availability
     memory_status = "available"
     try:
@@ -459,9 +468,9 @@ async def get_job_status(job_id: str):
             }
         )
     
-    # Filter out binary data that can't be JSON serialized
+    # Filter out binary data and internal objects that can't be JSON serialized
     safe_job = {k: v for k, v in job.items() 
-                if k not in ['encrypted_result', 'decryption_password'] 
+                if k not in ['encrypted_result', 'decryption_password', '_progress_parser'] 
                 and not isinstance(v, bytes)}
     
     return safe_job
@@ -648,6 +657,7 @@ async def tls_status():
 
 if __name__ == "__main__":
     import uvicorn
+    import uvicorn.config
     
     # Security: Verify secure environment
     if not os.path.exists("/tmp/memory-pool"):
@@ -673,6 +683,21 @@ if __name__ == "__main__":
     logger.info(f"🔐 HTTPS server starting on port {https_port} with TLS certificate")
     logger.info("🛡️  HTTP is completely disabled - all connections must use HTTPS")
     
+    # Create custom log config that respects our logging setup
+    import copy
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    
+    # Set log levels for uvicorn loggers to match our settings
+    if "loggers" in log_config:
+        if "uvicorn" in log_config["loggers"]:
+            log_config["loggers"]["uvicorn"]["level"] = settings.get_log_level_string().upper()
+        if "uvicorn.access" in log_config["loggers"]:
+            log_config["loggers"]["uvicorn.access"]["level"] = settings.get_log_level_string().upper()
+    
+    # Set root level if it exists
+    if "root" in log_config:
+        log_config["root"]["level"] = settings.get_log_level_string().upper()
+    
     # Start HTTPS-only server
     uvicorn.run(
         app,
@@ -680,8 +705,9 @@ if __name__ == "__main__":
         port=https_port,
         ssl_keyfile=str(tls_manager.key_file),
         ssl_certfile=str(tls_manager.cert_file),
-        log_level="warning" if not settings.DEBUG else "info",
+        log_config=log_config,  # Use custom config to respect our settings
         access_log=settings.DEBUG,
         server_header=False,  # Don't reveal uvicorn version
-        date_header=False     # Don't reveal system time
+        date_header=False,    # Don't reveal system time
+        use_colors=False      # Disable colors for cleaner logs
     )
