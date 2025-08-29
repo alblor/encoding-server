@@ -79,6 +79,27 @@ class SecureJobProcessor:
             # Validate FFmpeg parameters for security
             validated_params = self.ffmpeg_validator.validate_parameters(params)
             
+            # SECURITY: Encrypt password for storage if provided
+            encrypted_password = None
+            if decryption_password and not self.encryption_disabled:
+                try:
+                    # Use encryption manager to encrypt password for secure storage
+                    encrypted_password_data, password_key_id = self.encryption_manager.automated_encrypt(
+                        decryption_password.encode('utf-8')
+                    )
+                    encrypted_password = {
+                        'encrypted_data': encrypted_password_data,
+                        'key_id': password_key_id
+                    }
+                    logger.debug(f"Job {job_id}: Password encrypted for secure storage")
+                except Exception as e:
+                    logger.error(f"Job {job_id}: Failed to encrypt password: {e}")
+                    raise Exception("Failed to secure password for storage")
+            elif decryption_password and self.encryption_disabled:
+                # Store plaintext only if encryption is completely disabled (development only)
+                encrypted_password = decryption_password
+                logger.warning(f"Job {job_id}: Storing password in plaintext (ENCRYPTION DISABLED)")
+            
             # Create job record with enhanced progress tracking
             job_record = {
                 "id": job_id,
@@ -90,7 +111,7 @@ class SecureJobProcessor:
                 "message": "Job queued for processing",
                 "file_size": len(file_data),
                 "memory_mode": "encrypted_swap" if len(file_data) > self.memory_threshold else "ram",
-                "decryption_password": decryption_password,
+                "encrypted_password": encrypted_password,
                 # Enhanced progress tracking fields
                 "progress_details": {
                     "current_time": None,
@@ -109,8 +130,12 @@ class SecureJobProcessor:
             async with self.job_lock:
                 self.jobs[job_id] = job_record
             
+            # Clear plaintext password from memory immediately after encryption
+            if decryption_password:
+                decryption_password = None
+            
             # Start processing in background
-            asyncio.create_task(self._process_job_secure(job_id, file_data, validated_params, encryption_mode, decryption_password))
+            asyncio.create_task(self._process_job_secure(job_id, file_data, validated_params, encryption_mode))
             
             logger.info(f"Submitted job {job_id} for secure processing ({len(file_data)} bytes, {job_record['memory_mode']} mode)")
             return job_id
@@ -123,7 +148,7 @@ class SecureJobProcessor:
                     self.jobs[job_id]["message"] = str(e)
             raise
     
-    async def _process_job_secure(self, job_id: str, file_data: bytes, params: Dict, encryption_mode: str, decryption_password: str = None) -> None:
+    async def _process_job_secure(self, job_id: str, file_data: bytes, params: Dict, encryption_mode: str) -> None:
         """
         Process job using secure memory management and complete isolation.
         
@@ -184,7 +209,8 @@ class SecureJobProcessor:
                     raise Exception("Failed to allocate secure decryption storage")
                 
                 try:
-                    # Use password-based decryption (matching client-side format)
+                    # SECURITY: Retrieve and decrypt the stored password
+                    decryption_password = await self._get_decrypted_password(job_id)
                     if not decryption_password:
                         raise ValueError("Manual mode requires decryption password")
                     
@@ -192,6 +218,9 @@ class SecureJobProcessor:
                     result = self.encryption_manager.decrypt_password_based_file(
                         str(input_file_path), str(decrypted_path), decryption_password
                     )
+                    
+                    # Clear password from memory immediately after use
+                    decryption_password = None
                     
                     actual_input_path = decrypted_path
                     logger.info(f"Job {job_id}: Successfully decrypted input file ({result['size']} bytes)")
@@ -901,10 +930,8 @@ class SecureJobProcessor:
             # Manual mode: encrypt output using same password format as client
             logger.info(f"Job {job_id}: Encrypting output for manual mode ({len(output_data)} bytes)")
             
-            # Get password from job record
-            async with self.job_lock:
-                decryption_password = self.jobs[job_id].get("decryption_password")
-            
+            # SECURITY: Retrieve and decrypt the stored password
+            decryption_password = await self._get_decrypted_password(job_id)
             if not decryption_password:
                 raise Exception("Manual mode missing decryption password for output encryption")
             
@@ -926,6 +953,9 @@ class SecureJobProcessor:
                 with open(temp_encrypted, 'rb') as f:
                     encrypted_output = f.read()
                 
+                # Clear password from memory immediately after use
+                decryption_password = None
+                
                 logger.info(f"Job {job_id}: Successfully encrypted output ({len(output_data)} → {len(encrypted_output)} bytes)")
                 return encrypted_output
                 
@@ -934,6 +964,57 @@ class SecureJobProcessor:
                 for temp_file in [temp_unencrypted, temp_encrypted]:
                     if os.path.exists(temp_file):
                         self._secure_delete_file(temp_file)
+    
+    async def _get_decrypted_password(self, job_id: str) -> Optional[str]:
+        """
+        Securely retrieve and decrypt the stored password for a job.
+        
+        Returns:
+            Decrypted password string or None if no password stored
+        """
+        try:
+            async with self.job_lock:
+                if job_id not in self.jobs:
+                    return None
+                
+                encrypted_password_data = self.jobs[job_id].get("encrypted_password")
+            
+            if not encrypted_password_data:
+                return None
+            
+            # Handle plaintext password (only when encryption is disabled)
+            if self.encryption_disabled and isinstance(encrypted_password_data, str):
+                logger.warning(f"Job {job_id}: Returning plaintext password (ENCRYPTION DISABLED)")
+                return encrypted_password_data
+            
+            # Decrypt encrypted password
+            if isinstance(encrypted_password_data, dict):
+                encrypted_data = encrypted_password_data.get('encrypted_data')
+                key_id = encrypted_password_data.get('key_id')
+                
+                if not encrypted_data or not key_id:
+                    logger.error(f"Job {job_id}: Invalid encrypted password format")
+                    return None
+                
+                # Use encryption manager to decrypt password
+                try:
+                    decrypted_password_bytes = self.encryption_manager.automated_decrypt(
+                        encrypted_data, key_id
+                    )
+                    decrypted_password = decrypted_password_bytes.decode('utf-8')
+                    logger.debug(f"Job {job_id}: Password successfully decrypted from secure storage")
+                    return decrypted_password
+                    
+                except Exception as e:
+                    logger.error(f"Job {job_id}: Failed to decrypt stored password: {e}")
+                    return None
+            else:
+                logger.error(f"Job {job_id}: Unknown encrypted password format")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Job {job_id}: Error retrieving encrypted password: {e}")
+            return None
     
     def _generate_secure_output_path(self, job_id: str) -> str:
         """Generate secure output file path in tmpfs."""

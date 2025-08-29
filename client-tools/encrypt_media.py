@@ -132,7 +132,7 @@ Examples:
     
     parser.add_argument('input_file', help='Input media file to encrypt')
     parser.add_argument('--output', '-o', help='Output encrypted file path')
-    parser.add_argument('--password', '-p', help='Encryption password (will prompt if not provided)')
+    # Password argument removed for security - use secure input methods only
     parser.add_argument('--info', action='store_true', help='Show information about encrypted file')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     
@@ -163,16 +163,21 @@ Examples:
         else:
             output_path = args.output
         
-        # Get password
-        if args.password:
-            password = args.password
+        # Get password using secure methods only
+        import getpass
+        
+        # Method 1: Environment variable (for automation)
+        password = os.environ.get('MEDIA_ENCRYPTION_PASSWORD')
+        if password:
+            if args.verbose:
+                print("🔐 Using password from environment variable (MEDIA_ENCRYPTION_PASSWORD)")
         else:
-            import getpass
-            password = getpass.getpass("Enter encryption password: ")
-            confirm_password = getpass.getpass("Confirm password: ")
+            # Method 2: Interactive secure prompt (default)
+            password = getpass.getpass("🔐 Enter encryption password: ")
+            confirm_password = getpass.getpass("🔐 Confirm password: ")
             
             if password != confirm_password:
-                print("Error: Passwords do not match", file=sys.stderr)
+                print("❌ Error: Passwords do not match", file=sys.stderr)
                 sys.exit(1)
         
         if not password:
@@ -198,6 +203,11 @@ Examples:
         
         print(f"\n⚠️  IMPORTANT: Store your password securely!")
         print(f"   The encrypted file cannot be recovered without the password.")
+        
+        # Security: Clear password from memory
+        if 'confirm_password' in locals():
+            confirm_password = None  # Clear confirmation password
+        password = None  # Clear main password
         
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)

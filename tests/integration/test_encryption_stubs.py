@@ -9,6 +9,7 @@ Author: Lorenzo Albanese (alblor)
 
 import asyncio
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -44,16 +45,19 @@ class EncryptionStubTester:
                 encrypted_file = self.results_dir / f"{stub_file.stem}_encrypted.enc"
                 decrypted_file = self.results_dir / f"{stub_file.stem}_decrypted.bin"
                 
-                # Test encryption using client tool
+                # Test encryption using client tool with secure environment variable
                 encrypt_cmd = [
                     "python", str(self.client_tools_dir / "encrypt_media.py"),
                     str(stub_file),
-                    "--output", str(encrypted_file),
-                    "--password", "test_password_123"
+                    "--output", str(encrypted_file)
                 ]
                 
+                # SECURITY: Use environment variable instead of CLI argument
+                encrypt_env = dict(os.environ)
+                encrypt_env["MEDIA_ENCRYPTION_PASSWORD"] = "test_password_123"
+                
                 start_time = time.time()
-                encrypt_result = subprocess.run(encrypt_cmd, capture_output=True, text=True)
+                encrypt_result = subprocess.run(encrypt_cmd, capture_output=True, text=True, env=encrypt_env)
                 encrypt_time = time.time() - start_time
                 
                 if encrypt_result.returncode != 0:
@@ -66,16 +70,19 @@ class EncryptionStubTester:
                 original_size = stub_file.stat().st_size
                 encrypted_size = encrypted_file.stat().st_size
                 
-                # Test decryption using client tool
+                # Test decryption using client tool with secure environment variable
                 decrypt_cmd = [
                     "python", str(self.client_tools_dir / "decrypt_media.py"),
                     str(encrypted_file),
-                    "--output", str(decrypted_file),
-                    "--password", "test_password_123"
+                    "--output", str(decrypted_file)
                 ]
                 
+                # SECURITY: Use environment variable instead of CLI argument
+                decrypt_env = dict(os.environ)
+                decrypt_env["MEDIA_ENCRYPTION_PASSWORD"] = "test_password_123"
+                
                 start_time = time.time()
-                decrypt_result = subprocess.run(decrypt_cmd, capture_output=True, text=True)
+                decrypt_result = subprocess.run(decrypt_cmd, capture_output=True, text=True, env=decrypt_env)
                 decrypt_time = time.time() - start_time
                 
                 if decrypt_result.returncode != 0:

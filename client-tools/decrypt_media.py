@@ -9,6 +9,7 @@ Author: Lorenzo Albanese (alblor)
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -195,7 +196,7 @@ Examples:
     
     parser.add_argument('input_file', help='Encrypted media file to decrypt')
     parser.add_argument('--output', '-o', help='Output decrypted file path')
-    parser.add_argument('--password', '-p', help='Decryption password (will prompt if not provided)')
+    # Password argument removed for security - use secure input methods only
     parser.add_argument('--verify', action='store_true', help='Verify encrypted file structure only')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     
@@ -238,12 +239,17 @@ Examples:
         else:
             output_path = args.output
         
-        # Get password
-        if args.password:
-            password = args.password
+        # Get password using secure methods only
+        import getpass
+        
+        # Method 1: Environment variable (for automation)
+        password = os.environ.get('MEDIA_ENCRYPTION_PASSWORD')
+        if password:
+            if args.verbose:
+                print("🔐 Using password from environment variable (MEDIA_ENCRYPTION_PASSWORD)")
         else:
-            import getpass
-            password = getpass.getpass("Enter decryption password: ")
+            # Method 2: Interactive secure prompt (default)
+            password = getpass.getpass("🔐 Enter decryption password: ")
         
         if not password:
             print("Error: Password cannot be empty", file=sys.stderr)
@@ -265,6 +271,9 @@ Examples:
         if args.verbose:
             overhead = result['original_size'] - result['decrypted_size']
             print(f"  Removed Overhead: {overhead} bytes")
+        
+        # Security: Clear password from memory
+        password = None
         
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)

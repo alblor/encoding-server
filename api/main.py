@@ -559,7 +559,7 @@ async def get_job_status(job_id: str):
     
     # Filter out binary data and internal objects that can't be JSON serialized
     safe_job = {k: v for k, v in job.items() 
-                if k not in ['encrypted_result', 'decryption_password', '_progress_parser'] 
+                if k not in ['encrypted_result', 'decryption_password', 'encrypted_password', '_progress_parser'] 
                 and not isinstance(v, bytes)}
     
     return safe_job

@@ -8,6 +8,7 @@ Author: Lorenzo Albanese (alblor)
 """
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -48,13 +49,16 @@ class ManualModeTester:
             encrypt_cmd = [
                 "python", str(self.client_tools_dir / "encrypt_media.py"),
                 str(media_file),
-                "--output", str(encrypted_file),
-                "--password", password
+                "--output", str(encrypted_file)
             ]
+            
+            # SECURITY: Use environment variable instead of CLI argument
+            encrypt_env = dict(os.environ)
+            encrypt_env["MEDIA_ENCRYPTION_PASSWORD"] = password
             
             print(f"    Step 1: Encrypting {media_file.name}...")
             start_time = time.time()
-            encrypt_result = subprocess.run(encrypt_cmd, capture_output=True, text=True)
+            encrypt_result = subprocess.run(encrypt_cmd, capture_output=True, text=True, env=encrypt_env)
             encrypt_time = time.time() - start_time
             
             if encrypt_result.returncode != 0:
@@ -133,12 +137,15 @@ class ManualModeTester:
             decrypt_cmd = [
                 "python", str(self.client_tools_dir / "decrypt_media.py"),
                 str(encrypted_result_file),
-                "--output", str(final_result_file),
-                "--password", password
+                "--output", str(final_result_file)
             ]
             
+            # SECURITY: Use environment variable instead of CLI argument
+            decrypt_env = dict(os.environ)
+            decrypt_env["MEDIA_ENCRYPTION_PASSWORD"] = password
+            
             decrypt_start = time.time()
-            decrypt_result = subprocess.run(decrypt_cmd, capture_output=True, text=True)
+            decrypt_result = subprocess.run(decrypt_cmd, capture_output=True, text=True, env=decrypt_env)
             decrypt_time = time.time() - decrypt_start
             
             if decrypt_result.returncode != 0:
