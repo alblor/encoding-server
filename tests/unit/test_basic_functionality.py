@@ -25,9 +25,39 @@ from app.jobs import JobProcessor, FFmpegValidator
 @pytest.fixture
 def client():
     """Test client for the FastAPI application with proper state initialization."""
+    # Create mock Redis client with in-memory storage for testing
+    mock_redis = MagicMock()
+    mock_redis.ping.return_value = True
+    
+    # Create in-memory storage to simulate Redis
+    redis_storage = {}
+    
+    def mock_set(key, value, ex=None):
+        redis_storage[key] = value
+        return True
+    
+    def mock_get(key):
+        return redis_storage.get(key)
+    
+    def mock_delete(key):
+        return redis_storage.pop(key, None) is not None
+    
+    def mock_setex(key, ttl, value):
+        """Mock setex method for Redis - stores with TTL (ignored in mock)"""
+        redis_storage[key] = value
+        return True
+    
+    mock_redis.set = mock_set
+    mock_redis.get = mock_get
+    mock_redis.delete = mock_delete
+    mock_redis.setex = mock_setex
+    
     # Initialize app state manually for testing since lifespan doesn't run in TestClient
-    app.state.job_processor = JobProcessor()
-    app.state.encryption_manager = EncryptionManager()
+    # Use test encryption master key and mock Redis client
+    test_master_key = "dGVzdC1tYXN0ZXIta2V5LWZvci11bml0LXRlc3Rpbmc="  # Base64 test key
+    encryption_manager = EncryptionManager(master_key=test_master_key, redis_client=mock_redis)
+    app.state.encryption_manager = encryption_manager
+    app.state.job_processor = JobProcessor(encryption_manager)
     
     return TestClient(app)
 
@@ -42,13 +72,42 @@ def sample_video_data():
 @pytest.fixture
 def encryption_manager():
     """Encryption manager instance for testing."""
-    return EncryptionManager()
+    # Create mock Redis client with in-memory storage for testing
+    mock_redis = MagicMock()
+    mock_redis.ping.return_value = True
+    
+    # Create in-memory storage to simulate Redis
+    redis_storage = {}
+    
+    def mock_set(key, value, ex=None):
+        redis_storage[key] = value
+        return True
+    
+    def mock_get(key):
+        return redis_storage.get(key)
+    
+    def mock_delete(key):
+        return redis_storage.pop(key, None) is not None
+    
+    def mock_setex(key, ttl, value):
+        """Mock setex method for Redis - stores with TTL (ignored in mock)"""
+        redis_storage[key] = value
+        return True
+    
+    mock_redis.set = mock_set
+    mock_redis.get = mock_get
+    mock_redis.delete = mock_delete
+    mock_redis.setex = mock_setex
+    
+    # Use test encryption master key
+    test_master_key = "dGVzdC1tYXN0ZXIta2V5LWZvci11bml0LXRlc3Rpbmc="  # Base64 test key
+    return EncryptionManager(master_key=test_master_key, redis_client=mock_redis)
 
 
 @pytest.fixture
-def job_processor():
+def job_processor(encryption_manager):
     """Job processor instance for testing."""
-    return JobProcessor()
+    return JobProcessor(encryption_manager)
 
 
 @pytest.fixture
@@ -123,14 +182,10 @@ class TestEncryptionManager:
         assert isinstance(key_id, str)
         assert len(encrypted_data) > len(sample_video_data)  # Should be larger due to IV and tag
         
-        # For testing, we need to mock key retrieval since it's not implemented yet
-        with patch.object(encryption_manager, '_get_key_for_id') as mock_get_key:
-            # Mock the key retrieval to return a test key
-            test_key = encryption_manager.generate_key()
-            mock_get_key.return_value = test_key
-            
-            # This test would fail with current implementation since key storage isn't implemented
-            # But it demonstrates the expected interface
+        # Decrypt (automated mode stores the key in Redis during encryption)
+        decrypted_data = encryption_manager.automated_decrypt(encrypted_data, key_id)
+        
+        assert decrypted_data == sample_video_data
 
 
 class TestFFmpegValidator:
@@ -251,7 +306,8 @@ class TestAPIEndpoints:
         data = response.json()
         assert data['status'] == 'healthy'
         assert 'timestamp' in data
-        assert data['services']['ffmpeg'] == 'available'
+        assert 'services' in data
+        assert data['services']['ffmpeg']['status'] == 'available'
     
     def test_presets_endpoint(self, client):
         """Test the presets endpoint."""

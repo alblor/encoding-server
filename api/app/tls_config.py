@@ -27,13 +27,20 @@ class TLSManager:
         self.cert_dir = Path(cert_dir)
         self.cert_dir.mkdir(parents=True, exist_ok=True)
         
+        # Docker secrets directory (highest priority)
+        self.secrets_dir = Path("/run/secrets")
+        
         # Enterprise certificate directory (persistent)
         self.enterprise_cert_dir = Path("/opt/enterprise-certs")
         
-        # Certificate paths
+        # Certificate paths (temporary)
         self.cert_file = self.cert_dir / "server.crt"
         self.key_file = self.cert_dir / "server.key"
         self.ca_file = self.cert_dir / "ca.crt"
+        
+        # Docker secrets certificate paths (highest priority)
+        self.secrets_cert_file = self.secrets_dir / "tls_cert"
+        self.secrets_key_file = self.secrets_dir / "tls_key"
         
         # Enterprise certificate paths
         self.enterprise_cert_file = self.enterprise_cert_dir / "server.crt"
@@ -157,6 +164,48 @@ class TLSManager:
         except Exception as e:
             logger.error(f"❌ Failed to generate self-signed certificate: {e}")
             return False
+    
+    def get_ssl_context_from_secrets(self) -> Optional[ssl.SSLContext]:
+        """
+        Create SSL context from Docker secrets certificates.
+        
+        Returns:
+            SSL context if secrets are available, None otherwise
+        """
+        if not (self.secrets_cert_file.exists() and self.secrets_key_file.exists()):
+            logger.debug("Docker secrets certificates not available")
+            return None
+            
+        try:
+            logger.info("🔐 Loading TLS certificates from Docker secrets")
+            
+            # Create SSL context
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = self.tls_version
+            
+            # Load certificate and key from secrets
+            context.load_cert_chain(
+                certfile=str(self.secrets_cert_file),
+                keyfile=str(self.secrets_key_file)
+            )
+            
+            # Set cipher suites for security
+            context.set_ciphers(':'.join(self.cipher_suites))
+            
+            # Security settings
+            context.options |= ssl.OP_NO_SSLv2
+            context.options |= ssl.OP_NO_SSLv3
+            context.options |= ssl.OP_NO_TLSv1
+            context.options |= ssl.OP_NO_TLSv1_1
+            context.options |= ssl.OP_SINGLE_DH_USE
+            context.options |= ssl.OP_SINGLE_ECDH_USE
+            
+            logger.info("✅ SSL context created successfully from Docker secrets")
+            return context
+            
+        except Exception as e:
+            logger.error(f"Failed to create SSL context from Docker secrets: {e}")
+            return None
     
     def validate_certificate(self, renewal_threshold_days: int = 7) -> bool:
         """Validate existing certificate and key files with automatic renewal logic."""
@@ -306,12 +355,28 @@ class TLSManager:
             return False
     
     def get_ssl_context(self, force_regenerate: bool = False) -> Optional[ssl.SSLContext]:
-        """Create and configure SSL context for secure transport."""
+        """
+        Create and configure SSL context for secure transport.
+        
+        Priority order:
+        1. Docker secrets certificates (production)
+        2. Enterprise certificates (persistent)
+        3. Self-signed certificates (fallback)
+        """
         try:
-            # Ensure certificate exists and is valid (with automatic renewal)
+            # First priority: Try Docker secrets certificates
+            if not force_regenerate:
+                secrets_context = self.get_ssl_context_from_secrets()
+                if secrets_context:
+                    logger.info("✅ Using TLS certificates from Docker secrets")
+                    return secrets_context
+            
+            # Fallback: Ensure certificate exists and is valid (with automatic renewal)
             if not self.ensure_valid_certificate(force_regenerate=force_regenerate):
                 logger.error("❌ Failed to ensure valid SSL certificate")
                 return None
+            
+            logger.info("🔧 Creating SSL context from generated/enterprise certificates")
             
             # Create SSL context
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)

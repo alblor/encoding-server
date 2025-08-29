@@ -20,6 +20,13 @@ services:
     volumes:
       - ./certificates/enterprise:/opt/enterprise-certs:ro,consistent
     
+    # SECURITY: Docker secrets integration for sensitive configuration
+    secrets:
+      - jwt_secret
+      - encryption_master_key
+      - redis_password
+      - api_master_key
+    
     # SECURITY: Memory limits and protection (CPU managed by Proxmox)
     deploy:
       resources:
@@ -56,7 +63,8 @@ services:
       - ENVIRONMENT=secure-production
       - ENCRYPTION_MODE=dual
       - PARAMETER_VALIDATION=enhanced  # Enhanced validation with AV1 support
-      - REDIS_URL=redis://redis-secure:6379
+      - REDIS_HOST=redis-secure
+      - REDIS_PORT=6379
       - DEBUG=false
       - LOG_LEVEL=${LOG_LEVEL:-warning}  # Allow override, default to warning
       - TEMP_STORAGE=/tmp/memory-pool
@@ -105,19 +113,17 @@ services:
       - /data:size=2g,noexec,nosuid,nodev,noatime
       - /tmp:size=512m,noexec,nosuid,nodev,noatime
     
-    # SECURITY: Redis configuration for maximum security
+    # SECURITY: Docker secrets for Redis authentication
+    secrets:
+      - redis_password
+    
+    # SECURITY: Redis configuration for maximum security with password authentication
     command: >
-      redis-server 
-      --save ""
-      --appendonly no
-      --maxmemory 1g
-      --maxmemory-policy allkeys-lru
-      --tcp-backlog 128
-      --timeout 300
-      --tcp-keepalive 60
-      --bind 127.0.0.1
-      --protected-mode yes
-      --port 6379
+      sh -c '
+      echo "Loading Redis password from Docker secret..." &&
+      REDIS_PASSWORD=$$(cat /run/secrets/redis_password) &&
+      exec redis-server --requirepass "$$REDIS_PASSWORD" --save "" --appendonly no --maxmemory 1g --maxmemory-policy allkeys-lru --tcp-backlog 128 --timeout 300 --tcp-keepalive 60 --bind 0.0.0.0 --protected-mode yes --port 6379
+      '
     
     # SECURITY: Container hardening
     security_opt:
@@ -195,3 +201,15 @@ networks:
 
 # SECURITY: No named volumes - everything in tmpfs
 volumes: {}
+
+# SECURITY: Docker secrets for sensitive configuration
+# Secrets are mounted read-only at /run/secrets/ inside containers
+secrets:
+  jwt_secret:
+    file: ./secrets/jwt_secret
+  encryption_master_key:
+    file: ./secrets/encryption_master_key
+  redis_password:
+    file: ./secrets/redis_password
+  api_master_key:
+    file: ./secrets/api_master_key

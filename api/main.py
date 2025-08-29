@@ -27,24 +27,46 @@ import io
 
 # Configure logging BEFORE any app imports to ensure basicConfig takes effect
 logging.basicConfig(
-    level=logging.DEBUG,  # Temporarily hardcode for initial setup
+    level=logging.WARNING,  # Start with WARNING, will be updated after SecretManager init
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Import app modules AFTER logging is configured
-from app.config import settings
+# Import secret management first
+from app.secret_manager import initialize_secret_manager, get_secret_manager
+from app.config import initialize_settings, get_settings
+
+# Initialize SecretManager first (required for all other components)
+logger = logging.getLogger(__name__)
+logger.info("🚀 Starting Ultra-Secure Media Encoding Server initialization...")
+
+try:
+    # Initialize SecretManager first
+    secret_manager = initialize_secret_manager()
+    logger.info("✅ SecretManager initialized successfully")
+    
+    # Initialize settings with SecretManager
+    settings = initialize_settings()
+    logger.info("✅ Settings initialized with Docker secrets")
+    
+    # Update logging level from settings
+    log_level = settings.get_log_level()
+    logging.getLogger().setLevel(log_level)
+    for handler in logging.getLogger().handlers:
+        handler.setLevel(log_level)
+    logger.info(f"🔧 Logging configured - LOG_LEVEL={settings.LOG_LEVEL} (level={log_level})")
+    
+except Exception as e:
+    logger.error(f"❌ Critical initialization error: {e}")
+    logger.error("💡 Generate secrets with: ./scripts/generate_secrets.sh")
+    raise SystemExit(1)
+
+# Import other modules AFTER SecretManager and settings are initialized
+import redis
+from redis import ConnectionError as RedisConnectionError
 from app.secure_jobs import SecureJobProcessor
 from app.encryption import EncryptionManager
 from app.documentation import DocumentationManager
 from app.tls_config import tls_manager
-
-# After imports, update level from settings and create main logger
-logging.getLogger().setLevel(settings.get_log_level())
-for handler in logging.getLogger().handlers:
-    handler.setLevel(settings.get_log_level())
-
-logger = logging.getLogger(__name__)
-logger.info(f"🔧 Logging configured - LOG_LEVEL={settings.LOG_LEVEL} (level={settings.get_log_level()})")
 
 
 @asynccontextmanager
@@ -67,12 +89,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 os.makedirs(path, mode=0o700, exist_ok=True)
                 logger.info(f"✅ Created secure storage: {path}")
         
-        # Initialize secure services
-        app.state.encryption_manager = EncryptionManager()
-        app.state.job_processor = SecureJobProcessor(
-            encryption_manager=app.state.encryption_manager
-        )
-        app.state.documentation_manager = DocumentationManager()
+        # Initialize authenticated Redis client
+        try:
+            redis_client = redis.from_url(settings.REDIS_URL, decode_responses=False)
+            # Test Redis connection with authentication
+            redis_client.ping()
+            logger.info("✅ Redis connection established with Docker secrets authentication")
+        except RedisConnectionError as e:
+            logger.error(f"❌ Redis connection failed: {e}")
+            logger.error("💡 Check Redis password in Docker secrets and redis-secure container status")
+            raise RuntimeError("Redis authentication failed - check Docker secrets")
+        except Exception as e:
+            logger.error(f"❌ Redis initialization error: {e}")
+            raise
+        
+        # Initialize secure services with proper dependencies
+        try:
+            app.state.encryption_manager = EncryptionManager(
+                master_key=settings.ENCRYPTION_MASTER_KEY,
+                redis_client=redis_client
+            )
+            logger.info("✅ EncryptionManager initialized with Docker secrets master key")
+            
+            app.state.job_processor = SecureJobProcessor(
+                encryption_manager=app.state.encryption_manager
+            )
+            logger.info("✅ SecureJobProcessor initialized")
+            
+            app.state.documentation_manager = DocumentationManager()
+            logger.info("✅ DocumentationManager initialized")
+            
+        except Exception as e:
+            logger.error(f"❌ Service initialization failed: {e}")
+            raise RuntimeError(f"Component initialization failed: {e}")
         
         logger.info("🔐 Ultra-secure services initialized successfully")
         logger.info(f"💾 Memory threshold: {os.getenv('MEMORY_THRESHOLD', '4GB')}")
@@ -196,27 +245,67 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Secure health check endpoint."""
-    
-    # Check secure memory system availability
-    memory_status = "available"
-    try:
-        if not os.path.exists("/tmp/memory-pool"):
-            memory_status = "unavailable"
-    except Exception:
-        memory_status = "error"
-    
-    return {
+    """Comprehensive health check with Docker secrets validation."""
+    health_status = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "security_mode": "zero-trust",
-        "memory_system": memory_status,
-        "services": {
-            "ffmpeg": "available",
-            "encryption": "active",
-            "secure_memory": memory_status
-        }
+        "services": {}
     }
+    
+    # Check SecretManager health
+    try:
+        secret_health = get_secret_manager().health_check()
+        health_status["services"]["secret_manager"] = {
+            "status": secret_health["secret_manager"],
+            "cached_secrets": secret_health["cached_secrets"],
+            "required_secrets_available": all(
+                info["available"] for info in secret_health["required_secrets_status"].values()
+            )
+        }
+    except Exception as e:
+        health_status["services"]["secret_manager"] = {"status": "error", "error": str(e)}
+        health_status["status"] = "degraded"
+    
+    # Check Redis connection with authentication
+    try:
+        if hasattr(app.state, 'encryption_manager'):
+            app.state.encryption_manager.redis_client.ping()
+            health_status["services"]["redis"] = {"status": "healthy", "authenticated": True}
+        else:
+            health_status["services"]["redis"] = {"status": "not_initialized"}
+            health_status["status"] = "degraded"
+    except Exception as e:
+        health_status["services"]["redis"] = {"status": "error", "error": str(e)}
+        health_status["status"] = "degraded"
+    
+    # Check secure memory system availability
+    try:
+        memory_status = "available" if os.path.exists("/tmp/memory-pool") else "unavailable"
+        health_status["services"]["secure_memory"] = {"status": memory_status}
+    except Exception as e:
+        health_status["services"]["secure_memory"] = {"status": "error", "error": str(e)}
+        health_status["status"] = "degraded"
+    
+    # Check component initialization status
+    health_status["services"]["encryption_manager"] = {
+        "status": "healthy" if hasattr(app.state, "encryption_manager") else "not_initialized"
+    }
+    health_status["services"]["job_processor"] = {
+        "status": "healthy" if hasattr(app.state, "job_processor") else "not_initialized"
+    }
+    health_status["services"]["documentation_manager"] = {
+        "status": "healthy" if hasattr(app.state, "documentation_manager") else "not_initialized"
+    }
+    
+    # Check FFmpeg availability
+    try:
+        ffmpeg_available = os.system("which ffmpeg > /dev/null 2>&1") == 0
+        health_status["services"]["ffmpeg"] = {"status": "available" if ffmpeg_available else "unavailable"}
+    except Exception as e:
+        health_status["services"]["ffmpeg"] = {"status": "error", "error": str(e)}
+    
+    return health_status
 
 
 @app.get("/v1/security/status")

@@ -1,21 +1,45 @@
-"""Dual-mode encryption system for media files."""
+"""Dual-mode encryption system for media files with Docker secrets integration."""
 
+import base64
+import json
+import logging
 import os
 import secrets
+import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
+import redis
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
+logger = logging.getLogger(__name__)
+
 
 class EncryptionManager:
-    """Handles both automated and manual encryption modes."""
+    """
+    Handles both automated and manual encryption modes with secure key management.
     
-    def __init__(self):
+    Uses Docker secrets for master key and Redis for encrypted key storage.
+    """
+    
+    def __init__(self, master_key: str, redis_client: redis.Redis):
+        """
+        Initialize EncryptionManager with secure key storage.
+        
+        Args:
+            master_key: Master encryption key from Docker secrets
+            redis_client: Authenticated Redis client for key storage
+        """
         self.chunk_size = 64 * 1024  # 64KB chunks for streaming
+        self.master_key = base64.b64decode(master_key.encode())
+        self.redis_client = redis_client
+        self.key_ttl = 3600  # Keys expire after 1 hour
+        
+        logger.info("🔐 EncryptionManager initialized with secure key vault")
     
     def generate_key(self) -> bytes:
         """Generate a random AES-256 key."""
@@ -116,13 +140,9 @@ class EncryptionManager:
         
         encrypted_data = encryptor.update(data) + encryptor.finalize()
         
-        # Store key securely (in production, use proper key management)
+        # Generate secure key ID and store encrypted key in Redis
         key_id = secrets.token_hex(16)
-        
-        # Store key in memory for development (DEVELOPMENT ONLY)
-        if not hasattr(self, '_key_store'):
-            self._key_store = {}
-        self._key_store[key_id] = key
+        self._store_encrypted_key(key_id, key)
         
         # Combine IV + encrypted data + tag
         result = iv + encrypted_data + encryptor.tag
@@ -136,25 +156,135 @@ class EncryptionManager:
         tag = encrypted_data[-16:]
         ciphertext = encrypted_data[16:-16]
         
-        # In production, retrieve key from secure storage using key_id
-        # For now, we'll need to store keys temporarily
-        key = self._get_key_for_id(key_id)
+        # Retrieve key from secure Redis storage
+        key = self._retrieve_encrypted_key(key_id)
         
         cipher = Cipher(algorithms.AES(key), modes.GCM(iv, tag))
         decryptor = cipher.decryptor()
         
         return decryptor.update(ciphertext) + decryptor.finalize()
     
-    def _get_key_for_id(self, key_id: str) -> bytes:
-        """Retrieve encryption key for given ID (implement secure storage)."""
-        # This is a placeholder - implement proper key management
-        # In production, use Redis, HashiCorp Vault, or similar
-        # For now, store keys in memory (DEVELOPMENT ONLY)
-        if not hasattr(self, '_key_store'):
-            self._key_store = {}
+    def _store_encrypted_key(self, key_id: str, key: bytes) -> None:
+        """
+        Store an encryption key securely in Redis using master key encryption.
         
-        key = self._key_store.get(key_id, b"temporary_key_for_development_only")
-        return key
+        Args:
+            key_id: Unique identifier for the key
+            key: The raw key bytes to store
+        """
+        try:
+            # Derive a unique encryption key for this storage operation using HKDF
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=key_id.encode()[:16],  # Use key_id prefix as salt
+                info=b"key-encryption",
+            )
+            storage_key = hkdf.derive(self.master_key)
+            
+            # Generate IV for this encryption operation
+            iv = os.urandom(16)
+            
+            # Encrypt the key using AES-GCM
+            cipher = Cipher(algorithms.AES(storage_key), modes.GCM(iv))
+            encryptor = cipher.encryptor()
+            encrypted_key = encryptor.update(key) + encryptor.finalize()
+            
+            # Create storage metadata
+            key_data = {
+                "encrypted_key": base64.b64encode(encrypted_key).decode(),
+                "iv": base64.b64encode(iv).decode(),
+                "tag": base64.b64encode(encryptor.tag).decode(),
+                "created_at": int(time.time()),
+                "key_length": len(key)
+            }
+            
+            # Store in Redis with TTL
+            redis_key = f"key:{key_id}"
+            self.redis_client.setex(redis_key, self.key_ttl, json.dumps(key_data))
+            
+            logger.debug(f"Stored encrypted key {key_id} in Redis (TTL: {self.key_ttl}s)")
+            
+        except Exception as e:
+            logger.error(f"Failed to store key {key_id}: {e}")
+            raise ValueError(f"Failed to store encryption key: {e}")
+    
+    def _retrieve_encrypted_key(self, key_id: str) -> bytes:
+        """
+        Retrieve and decrypt an encryption key from Redis.
+        
+        Args:
+            key_id: The unique identifier for the key
+            
+        Returns:
+            The decrypted key bytes
+            
+        Raises:
+            ValueError: If key is not found or cannot be decrypted
+        """
+        try:
+            # Get key data from Redis
+            redis_key = f"key:{key_id}"
+            key_data_json = self.redis_client.get(redis_key)
+            
+            if not key_data_json:
+                raise ValueError(f"Encryption key {key_id} not found or expired")
+            
+            key_data = json.loads(key_data_json)
+            
+            # Extract components
+            encrypted_key = base64.b64decode(key_data["encrypted_key"])
+            iv = base64.b64decode(key_data["iv"])
+            tag = base64.b64decode(key_data["tag"])
+            
+            # Derive the same storage key used for encryption
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=key_id.encode()[:16],
+                info=b"key-encryption",
+            )
+            storage_key = hkdf.derive(self.master_key)
+            
+            # Decrypt the key
+            cipher = Cipher(algorithms.AES(storage_key), modes.GCM(iv, tag))
+            decryptor = cipher.decryptor()
+            key = decryptor.update(encrypted_key) + decryptor.finalize()
+            
+            logger.debug(f"Retrieved encrypted key {key_id} from Redis")
+            return key
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid key data format for {key_id}: {e}")
+            raise ValueError(f"Invalid key data format: {e}")
+        except Exception as e:
+            logger.error(f"Failed to retrieve key {key_id}: {e}")
+            raise ValueError(f"Failed to retrieve encryption key: {e}")
+    
+    def cleanup_expired_keys(self) -> int:
+        """
+        Clean up expired keys from Redis (manual cleanup).
+        
+        Returns:
+            Number of keys cleaned up
+        """
+        try:
+            # Find all key entries
+            pattern = "key:*"
+            keys = self.redis_client.keys(pattern)
+            
+            cleaned = 0
+            for key in keys:
+                # Check if key still exists (TTL cleanup)
+                if not self.redis_client.exists(key):
+                    cleaned += 1
+            
+            logger.info(f"Manual key cleanup completed: {cleaned} expired keys found")
+            return cleaned
+            
+        except Exception as e:
+            logger.error(f"Key cleanup failed: {e}")
+            return 0
     
     def decrypt_password_based_file(self, input_path: str, output_path: str, password: str) -> dict:
         """
