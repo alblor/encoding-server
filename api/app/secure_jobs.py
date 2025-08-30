@@ -37,6 +37,8 @@ class SecureJobProcessor:
         self.progress_parser = FFmpegProgressParser()
         self.jobs: Dict[str, Dict] = {}
         self.job_lock = asyncio.Lock()
+        self.cancelling_jobs: set = set()  # Track jobs being cancelled
+        self.job_processes: Dict[str, asyncio.subprocess.Process] = {}  # Track active processes
         
         # Zero-trust configuration
         self.memory_threshold = int(os.getenv("MEMORY_THRESHOLD", "4294967296"))  # 4GB
@@ -161,6 +163,12 @@ class SecureJobProcessor:
         output_storage = None
         
         try:
+            # Check for cancellation before starting processing
+            if job_id in self.cancelling_jobs:
+                logger.debug(f"DEBUG: Job {job_id} - Cancellation detected at start of processing (in cancelling_jobs set)")
+                await self._update_job_status(job_id, "cancelled", "Job cancelled during setup", None)
+                return
+            
             # LAYER 3 SECURITY: Validate execution environment adaptively
             security_assessment = self._validate_execution_environment()
             if not security_assessment["meets_requirements"]:
@@ -190,6 +198,12 @@ class SecureJobProcessor:
                 raise Exception("Failed to allocate secure input storage")
             
             await self._update_job_status(job_id, "processing", "Input file secured in memory", 25)
+            
+            # Check for cancellation after secure storage setup
+            if job_id in self.cancelling_jobs:
+                logger.debug(f"DEBUG: Job {job_id} - Cancellation detected after secure storage setup (in cancelling_jobs set)")
+                await self._update_job_status(job_id, "cancelled", "Job cancelled during storage setup", None)
+                return
             
             # Handle encryption mode: decrypt manual mode data before processing (unless disabled)
             actual_input_path = input_file_path
@@ -275,6 +289,12 @@ class SecureJobProcessor:
             
             await self._update_job_status(job_id, "processing", "Starting FFmpeg processing", 40)
             
+            # Check for cancellation before FFmpeg execution
+            if job_id in self.cancelling_jobs:
+                logger.debug(f"DEBUG: Job {job_id} - Cancellation detected before FFmpeg execution (in cancelling_jobs set)")
+                await self._update_job_status(job_id, "cancelled", "Job cancelled before FFmpeg execution", None)
+                return
+            
             # Build FFmpeg command with secure file paths
             output_file_path = self._generate_secure_output_path(job_id)
             ffmpeg_cmd = self.ffmpeg_validator.build_command(
@@ -283,9 +303,13 @@ class SecureJobProcessor:
             
             # Execute FFmpeg with secure memory constraints
             logger.info(f"Job {job_id}: Executing FFmpeg command")
-            success = await self._execute_ffmpeg_secure(job_id, ffmpeg_cmd)
+            ffmpeg_result = await self._execute_ffmpeg_secure(job_id, ffmpeg_cmd)
             
-            if not success:
+            if ffmpeg_result == "cancelled":
+                logger.debug(f"DEBUG: Job {job_id} - FFmpeg execution returned 'cancelled' - job was cancelled")
+                await self._update_job_status(job_id, "cancelled", "Job cancelled during FFmpeg execution", None)
+                return  # Exit processing cleanly
+            elif not ffmpeg_result:
                 raise Exception("FFmpeg processing failed")
             
             await self._update_job_status(job_id, "processing", "Reading processed output", 90)
@@ -326,7 +350,19 @@ class SecureJobProcessor:
             logger.info(f"Job {job_id}: Completed successfully ({result_size} bytes output)")
             
         except Exception as e:
+            # CRITICAL: Check if job was cancelled before marking as failed
+            async with self.job_lock:
+                current_job = self.jobs.get(job_id)
+                if current_job and current_job.get("status") == "cancelled":
+                    logger.debug(f"DEBUG: Job {job_id} - Exception occurred but job already cancelled: {e}")
+                    return  # Job already properly marked as cancelled
+                elif job_id in self.cancelling_jobs:
+                    logger.debug(f"DEBUG: Job {job_id} - Exception during cancellation process: {e}")
+                    await self._update_job_status(job_id, "cancelled", "Job cancelled with cleanup", None)
+                    return
+            
             logger.error(f"Job {job_id} failed: {e}")
+            logger.debug(f"DEBUG: Job {job_id} - Marking as failed (not cancelled)")
             await self._update_job_status(job_id, "failed", str(e), None)
         
         finally:
@@ -364,6 +400,11 @@ class SecureJobProcessor:
                 shell=False      # Ensure no shell interpretation
             )
             
+            # Register process for potential cancellation
+            async with self.job_lock:
+                self.job_processes[job_id] = process
+                logger.debug(f"DEBUG: Job {job_id} - Registered FFmpeg process (PID: {process.pid}) in job_processes dict")
+            
             # Monitor progress concurrently with FFmpeg execution
             progress_task = asyncio.create_task(
                 self._monitor_ffmpeg_progress(job_id, process)
@@ -377,10 +418,24 @@ class SecureJobProcessor:
                 )
             except asyncio.CancelledError:
                 # If cancelled, make sure to clean up
+                logger.debug(f"DEBUG: Job {job_id} - AsyncIO CancelledError caught during FFmpeg execution")
+                logger.info(f"Job {job_id}: FFmpeg execution cancelled, cleaning up process")
                 if not process.returncode:
-                    process.terminate()
-                    await process.wait()
+                    try:
+                        process.terminate()
+                        # Wait briefly for graceful shutdown
+                        await asyncio.wait_for(process.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        # Force kill if graceful termination fails
+                        logger.warning(f"Job {job_id}: Forcing FFmpeg termination")
+                        process.kill()
+                        await process.wait()
                 raise
+            finally:
+                # Clean up process tracking regardless of outcome
+                async with self.job_lock:
+                    logger.debug(f"DEBUG: Job {job_id} - Removing process from job_processes dict")
+                    self.job_processes.pop(job_id, None)
             
             # Read any remaining stdout data (stderr is handled by monitoring task)
             if process.stdout:
@@ -392,15 +447,28 @@ class SecureJobProcessor:
                 stdout = b""
             
             if process.returncode == 0:
+                logger.debug(f"DEBUG: Job {job_id} - FFmpeg process completed with return code 0")
                 logger.info(f"Job {job_id}: FFmpeg completed successfully")
                 return True
+            elif process.returncode in [-9, -15, 137, 143]:  # SIGKILL, SIGTERM signals
+                # These return codes indicate process termination, likely from cancellation
+                logger.debug(f"DEBUG: Job {job_id} - FFmpeg terminated with signal (return code {process.returncode})")
+                async with self.job_lock:
+                    if job_id in self.cancelling_jobs or (job_id in self.jobs and self.jobs[job_id].get('status') == 'cancelled'):
+                        logger.info(f"Job {job_id}: FFmpeg terminated due to cancellation")
+                        return "cancelled"  # Special return value to indicate cancellation
+                    else:
+                        logger.warning(f"Job {job_id}: FFmpeg terminated unexpectedly with signal {process.returncode}")
+                        return False
             else:
+                logger.debug(f"DEBUG: Job {job_id} - FFmpeg process failed with return code {process.returncode}")
                 logger.error(f"Job {job_id}: FFmpeg failed with code {process.returncode}")
                 # stderr is handled by monitoring task, so we log what we can
                 logger.error(f"Job {job_id}: Check job progress details for error information")
                 return False
                 
         except Exception as e:
+            logger.debug(f"DEBUG: Job {job_id} - Exception in _execute_ffmpeg_secure: {e}")
             logger.error(f"Job {job_id}: FFmpeg execution error: {e}")
             return False
     
@@ -756,6 +824,12 @@ class SecureJobProcessor:
                 # Fallback to basic progress monitoring
                 progress = 40
                 while process.returncode is None:
+                    # Check for cancellation request
+                    if job_id in self.cancelling_jobs:
+                        logger.debug(f"DEBUG: Job {job_id} - Cancellation detected in basic monitoring (in cancelling_jobs set)")
+                        logger.info(f"Job {job_id}: Cancellation detected in basic monitoring")
+                        return
+                    
                     await asyncio.sleep(1)
                     progress = min(progress + 1, 89)  # Max at 89% to leave room for finalization
                     await self._update_job_status(
@@ -771,6 +845,12 @@ class SecureJobProcessor:
             
             while process.returncode is None:
                 try:
+                    # Check for cancellation request
+                    if job_id in self.cancelling_jobs:
+                        logger.debug(f"DEBUG: Job {job_id} - Cancellation detected in advanced progress monitoring (in cancelling_jobs set)")
+                        logger.info(f"Job {job_id}: Cancellation detected in progress monitoring")
+                        return
+                    
                     # Read stderr with larger buffer to avoid truncation
                     try:
                         stderr_data = await asyncio.wait_for(
@@ -1116,3 +1196,163 @@ class SecureJobProcessor:
             job_list.append(job_summary)
         
         return job_list
+    
+    async def cancel_job(self, job_id: str) -> Dict[str, Any]:
+        """
+        Cancel a job gracefully with comprehensive resource cleanup.
+        
+        This method provides graceful job cancellation while maintaining all security 
+        guarantees including 3-pass secure deletion and memory cleanup.
+        
+        Args:
+            job_id: Job ID to cancel
+            
+        Returns:
+            Dictionary with cancellation status and cleanup information
+            
+        Raises:
+            ValueError: If job not found or cannot be cancelled
+        """
+        async with self.job_lock:
+            # Check if job exists
+            if job_id not in self.jobs:
+                raise ValueError(f"Job {job_id} not found")
+            
+            job = self.jobs[job_id]
+            current_status = job["status"]
+            
+            # CRITICAL: Double-check for race conditions - re-read status after acquiring lock
+            await asyncio.sleep(0.001)  # Brief yield to ensure any pending status updates are visible
+            fresh_status = self.jobs[job_id]["status"]  # Re-read from dict
+            if fresh_status != current_status:
+                logger.debug(f"DEBUG: Job {job_id} - Status changed during lock acquisition: {current_status} -> {fresh_status}")
+                current_status = fresh_status
+                job = self.jobs[job_id]  # Re-get the job dict
+            
+            # Check if job can be cancelled
+            logger.debug(f"DEBUG: Job {job_id} - Final status check: {current_status}, in cancelling_jobs: {job_id in self.cancelling_jobs}")
+            logger.debug(f"DEBUG: Job {job_id} - Job dict status: {job.get('status', 'NO_STATUS_KEY')}")
+            if current_status == "completed":
+                raise ValueError(f"Job {job_id} already completed - cannot cancel")
+            elif current_status == "failed":
+                raise ValueError(f"Job {job_id} already failed - cannot cancel")  
+            elif current_status == "cancelled":
+                logger.debug(f"DEBUG: Job {job_id} - Refusing double cancellation: status is already 'cancelled'")
+                raise ValueError(f"Job {job_id} already cancelled")
+            elif job_id in self.cancelling_jobs:
+                logger.debug(f"DEBUG: Job {job_id} - Refusing double cancellation: job is in cancelling_jobs set")
+                raise ValueError(f"Job {job_id} already being cancelled")
+            
+            # Mark job as being cancelled
+            self.cancelling_jobs.add(job_id)
+            logger.debug(f"DEBUG: Job {job_id} - Added to cancelling_jobs set")
+            logger.info(f"Job {job_id}: Starting cancellation process (current status: {current_status})")
+            
+            # Update job status to cancelled
+            job["status"] = "cancelled"
+            job["message"] = "Job cancelled by user request"
+            job["cancelled_at"] = time.time()
+            logger.debug(f"DEBUG: Job {job_id} - Status updated to 'cancelled' in jobs dict")
+            
+            # Verify the status update worked
+            if self.jobs[job_id]["status"] != "cancelled":
+                logger.error(f"DEBUG: Job {job_id} - Status update failed! Status is still: {self.jobs[job_id]['status']}")
+                raise Exception(f"Failed to update job status to cancelled")
+            
+            logger.debug(f"DEBUG: Job {job_id} - Status update verified: {self.jobs[job_id]['status']}")
+            
+            # Force a brief yield to ensure changes are committed before releasing lock
+            await asyncio.sleep(0.001)  # 1ms delay to ensure proper synchronization
+            logger.debug(f"DEBUG: Job {job_id} - Post-update verification: status={self.jobs[job_id]['status']}, in_cancelling={job_id in self.cancelling_jobs}")
+            
+        try:
+            cleanup_results = {
+                "job_id": job_id,
+                "previous_status": current_status,
+                "cancelled_at": job["cancelled_at"],
+                "cleanup_performed": []
+            }
+            
+            # Step 1: Gracefully terminate FFmpeg process if running
+            process = self.job_processes.get(job_id)
+            logger.debug(f"DEBUG: Job {job_id} - Process lookup: {process is not None}, returncode: {process.returncode if process else 'N/A'}")
+            if process and process.returncode is None:
+                logger.debug(f"DEBUG: Job {job_id} - Found active FFmpeg process (PID: {process.pid})")
+                logger.info(f"Job {job_id}: Terminating active FFmpeg process (PID: {process.pid})")
+                cleanup_results["cleanup_performed"].append("ffmpeg_process_terminated")
+                
+                try:
+                    # Graceful termination
+                    process.terminate()
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                    logger.info(f"Job {job_id}: FFmpeg process terminated gracefully")
+                except asyncio.TimeoutError:
+                    # Force termination if graceful fails
+                    logger.warning(f"Job {job_id}: Force killing FFmpeg process")
+                    process.kill()
+                    await process.wait()
+                    cleanup_results["cleanup_performed"].append("ffmpeg_process_force_killed")
+            
+            # Step 2: Clean up secure memory storage
+            storage_id = job.get("result_storage_id")
+            if storage_id:
+                logger.info(f"Job {job_id}: Cleaning up secure memory storage")
+                secure_memory_manager._cleanup_storage(storage_id)
+                cleanup_results["cleanup_performed"].append("secure_memory_cleaned")
+            
+            # Step 3: Secure file deletion for temporary files
+            if self.zero_trace_enabled:
+                # Look for and securely delete any temporary files
+                output_path = f"/tmp/memory-pool/output_{job_id}.mp4"
+                if Path(output_path).exists():
+                    logger.info(f"Job {job_id}: Performing 3-pass secure deletion of temporary file")
+                    self._secure_delete_file(output_path)
+                    cleanup_results["cleanup_performed"].append("temporary_file_shredded")
+            
+            # Step 4: Clear encrypted passwords and keys from memory
+            if "encrypted_password" in job and job["encrypted_password"]:
+                logger.info(f"Job {job_id}: Clearing encrypted password from memory")
+                if isinstance(job["encrypted_password"], dict):
+                    # Zero out the encrypted data
+                    encrypted_data = job["encrypted_password"].get("encrypted_data", b"")
+                    if isinstance(encrypted_data, bytes):
+                        # Python bytes are immutable, but we clear the reference
+                        job["encrypted_password"] = None
+                else:
+                    job["encrypted_password"] = None
+                cleanup_results["cleanup_performed"].append("encrypted_password_cleared")
+            
+            # Step 5: Remove any encrypted results
+            if "encrypted_result" in job:
+                job["encrypted_result"] = None
+                cleanup_results["cleanup_performed"].append("encrypted_result_cleared")
+            
+            logger.info(f"Job {job_id}: Cancellation completed successfully")
+            cleanup_results["status"] = "cancelled"
+            cleanup_results["message"] = "Job cancelled and resources cleaned up successfully"
+            
+            return cleanup_results
+            
+        except Exception as e:
+            logger.error(f"Job {job_id}: Error during cancellation: {e}")
+            # Even if cleanup partially fails, keep the job marked as cancelled
+            async with self.job_lock:
+                if job_id in self.jobs:
+                    self.jobs[job_id]["message"] = f"Job cancelled with cleanup errors: {str(e)}"
+            
+            return {
+                "job_id": job_id,
+                "status": "cancelled",
+                "message": f"Job cancelled but cleanup encountered errors: {str(e)}",
+                "cleanup_performed": cleanup_results.get("cleanup_performed", [])
+            }
+            
+        finally:
+            # Always remove from cancelling jobs and process tracking
+            async with self.job_lock:
+                logger.debug(f"DEBUG: Job {job_id} - Finally block: Removing from cancelling_jobs and job_processes")
+                logger.debug(f"DEBUG: Job {job_id} - Finally block: Job status before cleanup: {self.jobs.get(job_id, {}).get('status', 'NOT_FOUND')}")
+                self.cancelling_jobs.discard(job_id)
+                self.job_processes.pop(job_id, None)
+                logger.debug(f"DEBUG: Job {job_id} - Finally block: Final job status after cleanup: {self.jobs.get(job_id, {}).get('status', 'NOT_FOUND')}")
+            logger.debug(f"Job {job_id}: Removed from cancelling jobs tracking")

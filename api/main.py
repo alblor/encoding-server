@@ -614,6 +614,83 @@ async def list_jobs():
     }
 
 
+@app.post("/v1/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str):
+    """
+    Cancel a processing job gracefully.
+    
+    This endpoint allows users to cancel jobs that are queued or currently processing.
+    Completed or failed jobs cannot be cancelled. The cancellation process:
+    
+    1. Gracefully terminates any running FFmpeg processes
+    2. Performs comprehensive resource cleanup including secure memory deletion
+    3. Updates job status to 'cancelled' (not 'failed')
+    4. Maintains all security guarantees including 3-pass file deletion
+    
+    Args:
+        job_id: The job ID to cancel
+        
+    Returns:
+        Cancellation status with cleanup details
+        
+    Raises:
+        HTTPException: 404 if job not found, 400 if job cannot be cancelled
+    """
+    try:
+        result = await app.state.job_processor.cancel_job(job_id)
+        
+        return {
+            "success": True,
+            "job_id": job_id,
+            "status": "cancelled",
+            "message": "Job cancelled successfully",
+            "cancelled_at": result.get("cancelled_at"),
+            "previous_status": result.get("previous_status"),
+            "cleanup_performed": result.get("cleanup_performed", [])
+        }
+        
+    except ValueError as e:
+        error_msg = str(e)
+        
+        # Determine appropriate HTTP status code based on error
+        if "not found" in error_msg:
+            status_code = 404
+            error_type = "not_found_error"
+        elif "already completed" in error_msg or "already failed" in error_msg or "already cancelled" in error_msg:
+            status_code = 400
+            error_type = "invalid_operation_error"
+        elif "already being cancelled" in error_msg:
+            status_code = 409
+            error_type = "conflict_error"
+        else:
+            status_code = 400
+            error_type = "validation_error"
+            
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": {
+                    "message": error_msg,
+                    "type": error_type,
+                    "job_id": job_id
+                }
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Job cancellation error for {job_id}: {e}")
+        raise HTTPException(
+            status_code=500, 
+            detail={
+                "error": {
+                    "message": "Internal server error during cancellation",
+                    "type": "internal_server_error",
+                    "job_id": job_id
+                }
+            }
+        )
+
+
 # ================================
 # DOCUMENTATION ENDPOINTS
 # ================================

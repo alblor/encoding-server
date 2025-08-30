@@ -37,6 +37,7 @@ help:
 	@echo "  test-automated  Automated mode with real media files"
 	@echo "  test-api        API endpoint comprehensive testing"
 	@echo "  test-docs       Documentation API validation (9 endpoints)"
+	@echo "  test-cancellation Job cancellation validation (6 scenarios)"
 	@echo "  test-prepare    Generate test data only"
 
 # Note: Development environment removed - use secure-* commands for production
@@ -129,6 +130,11 @@ test-progress:
 	@echo "📊 Running Progress Tracking Tests..."
 	python tests/integration/test_progress_tracking.py
 
+# Job cancellation validation
+test-cancellation:
+	@echo "🛑 Running Job Cancellation Tests..."
+	python tests/integration/test_job_cancellation.py
+
 # Complete test suite with preparation (MAIN COMMAND)
 test-all: test-prepare test
 	@echo ""
@@ -136,7 +142,7 @@ test-all: test-prepare test
 	@echo "All test data generated and all scenarios tested"
 
 # Run ALL tests (unit + real-world scenarios) - assumes data ready
-test: test-unit test-encryption test-manual test-automated test-api test-docs test-progress
+test: test-unit test-encryption test-manual test-automated test-api test-docs test-progress test-cancellation
 	@echo ""
 	@echo "📊 All Testing Complete!"
 	@echo "Check tests/results/ for detailed reports"

@@ -311,6 +311,13 @@ class DocumentationManager:
                     "description": "Download processed media file with automatic decryption"
                 },
                 {
+                    "id": "cancel_job",
+                    "path": "/v1/jobs/{job_id}/cancel",
+                    "method": "POST",
+                    "title": "Cancel Job",
+                    "description": "Cancel a processing job gracefully with secure cleanup"
+                },
+                {
                     "id": "list_jobs",
                     "path": "/v1/jobs",
                     "method": "GET", 
@@ -337,6 +344,7 @@ class DocumentationManager:
             "submit_job": self._get_submit_job_endpoint_docs(),
             "job_status": self._get_job_status_endpoint_docs(),
             "job_result": self._get_job_result_endpoint_docs(),
+            "cancel_job": self._get_cancel_job_endpoint_docs(),
             "list_jobs": self._get_list_jobs_endpoint_docs()
         }
         
@@ -863,6 +871,113 @@ class DocumentationManager:
         
         return response
     
+    def _get_cancel_job_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for POST /v1/jobs/{job_id}/cancel endpoint."""
+        response = self._create_response_template("endpoint", "Cancel Job Endpoint")
+        
+        response["manpage"] = {
+            "name": "POST /v1/jobs/{job_id}/cancel",
+            "synopsis": "Cancel a processing job gracefully with comprehensive cleanup",
+            "description": (
+                "Cancel a job that is currently queued or processing. This endpoint provides "
+                "graceful cancellation with comprehensive resource cleanup including secure memory "
+                "deletion and 3-pass file shredding. Cancelled jobs will show status 'cancelled' "
+                "(not 'failed') and cannot be resumed. Completed or already failed jobs cannot be cancelled."
+            ),
+            "method": "POST",
+            "path": "/v1/jobs/{job_id}/cancel",
+            "authentication": "None required",
+            "parameters": [
+                {
+                    "name": "job_id",
+                    "type": "string (UUID)",
+                    "location": "path",
+                    "required": True,
+                    "description": "Unique job identifier for the job to cancel"
+                }
+            ],
+            "responses": {
+                "200": {
+                    "description": "Job cancelled successfully",
+                    "content": {
+                        "success": True,
+                        "job_id": "job-uuid",
+                        "status": "cancelled",
+                        "message": "Job cancelled successfully", 
+                        "cancelled_at": 1693123456.789,
+                        "previous_status": "processing",
+                        "cleanup_performed": [
+                            "ffmpeg_process_terminated",
+                            "secure_memory_cleaned",
+                            "temporary_file_shredded",
+                            "encrypted_password_cleared"
+                        ]
+                    }
+                },
+                "400": {
+                    "description": "Job cannot be cancelled (already completed/failed/cancelled)",
+                    "content": {
+                        "error": {
+                            "message": "Job already completed - cannot cancel",
+                            "type": "invalid_operation_error",
+                            "job_id": "job-uuid"
+                        }
+                    }
+                },
+                "404": {
+                    "description": "Job not found",
+                    "content": {
+                        "error": {
+                            "message": "Job not found",
+                            "type": "not_found_error",
+                            "job_id": "job-uuid"
+                        }
+                    }
+                },
+                "409": {
+                    "description": "Job already being cancelled",
+                    "content": {
+                        "error": {
+                            "message": "Job already being cancelled",
+                            "type": "conflict_error",
+                            "job_id": "job-uuid"
+                        }
+                    }
+                },
+                "500": {
+                    "description": "Internal server error during cancellation"
+                }
+            },
+            "examples": [
+                {
+                    "title": "Cancel processing job",
+                    "request": f"curl -X POST {self.base_url}/v1/jobs/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "description": "Cancel a job that is currently processing"
+                },
+                {
+                    "title": "Cancel queued job",
+                    "request": f"curl -X POST {self.base_url}/v1/jobs/660f9511-f30c-52e5-b827-557766551111/cancel",
+                    "description": "Cancel a job that is queued and waiting for processing"
+                }
+            ],
+            "security_notes": [
+                "Graceful FFmpeg process termination (SIGTERM, fallback to SIGKILL)",
+                "Comprehensive memory cleanup with secure storage deletion", 
+                "3-pass secure file shredding for temporary files",
+                "Encrypted password and key clearing from memory",
+                "All security guarantees maintained during cancellation"
+            ],
+            "cancellation_stages": {
+                "queued": "Job removed from queue immediately",
+                "processing": "FFmpeg terminated, resources cleaned up",
+                "completed": "Cannot cancel - job already finished",
+                "failed": "Cannot cancel - job already failed",
+                "cancelled": "Already cancelled - no action taken"
+            }
+        }
+        
+        return response
+    
     def _get_list_jobs_endpoint_docs(self) -> Dict[str, Any]:
         """Documentation for GET /v1/jobs endpoint."""
         response = self._create_response_template("endpoint", "List All Jobs Endpoint")
@@ -1141,6 +1256,77 @@ for file in *.mp4; do
     echo "Completed: processed_$file"
 done''',
                     "usage": "Save as batch_process.sh and run: chmod +x batch_process.sh && ./batch_process.sh"
+                },
+                "job_cancellation": {
+                    "title": "Job Cancellation Scenarios",
+                    "description": "Cancel processing jobs gracefully at different stages",
+                    "use_case": "Stop jobs when requirements change or errors are detected",
+                    "scenarios": [
+                        {
+                            "scenario": "Cancel queued job",
+                            "description": "Cancel a job before processing begins",
+                            "steps": [
+                                {
+                                    "step": 1,
+                                    "action": "Submit job for processing", 
+                                    "command": f'curl -X POST {self.base_url}/v1/jobs -F "file=@input.mp4" -F "params={{\\"video_codec\\":\\"libx264\\"}}"',
+                                    "expected": {"job_id": "uuid", "status": "queued"}
+                                },
+                                {
+                                    "step": 2,
+                                    "action": "Cancel before processing starts",
+                                    "command": f"curl -X POST {self.base_url}/v1/jobs/{{job_id}}/cancel",
+                                    "expected": {"status": "cancelled", "previous_status": "queued"}
+                                }
+                            ]
+                        },
+                        {
+                            "scenario": "Cancel processing job",
+                            "description": "Cancel a job while FFmpeg is actively processing",
+                            "steps": [
+                                {
+                                    "step": 1,
+                                    "action": "Submit and wait for processing to begin",
+                                    "command": f'curl -X POST {self.base_url}/v1/jobs -F "file=@large_input.mp4" -F "params={{\\"video_codec\\":\\"libx264\\"}}"'
+                                },
+                                {
+                                    "step": 2,
+                                    "action": "Check job is processing",
+                                    "command": f"curl -X GET {self.base_url}/v1/jobs/{{job_id}}",
+                                    "expected": {"status": "processing"}
+                                },
+                                {
+                                    "step": 3,
+                                    "action": "Cancel during processing",
+                                    "command": f"curl -X POST {self.base_url}/v1/jobs/{{job_id}}/cancel",
+                                    "expected": {
+                                        "status": "cancelled",
+                                        "previous_status": "processing", 
+                                        "cleanup_performed": ["ffmpeg_process_terminated", "secure_memory_cleaned"]
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    "cancellation_verification": [
+                        {
+                            "action": "Verify cancelled status",
+                            "command": f"curl -X GET {self.base_url}/v1/jobs/{{job_id}}",
+                            "expected": {"status": "cancelled", "message": "Job cancelled by user request"}
+                        },
+                        {
+                            "action": "Confirm result not downloadable",
+                            "command": f"curl -X GET {self.base_url}/v1/jobs/{{job_id}}/result",
+                            "expected": "400 - Job not completed"
+                        }
+                    ],
+                    "cleanup_guarantees": [
+                        "FFmpeg processes terminated gracefully (SIGTERM → SIGKILL fallback)",
+                        "All temporary files securely deleted with 3-pass shredding",
+                        "Encrypted passwords and keys cleared from memory",
+                        "Secure memory storage cleaned and freed",
+                        "Job marked as 'cancelled' (never 'failed')"
+                    ]
                 }
             },
             "troubleshooting": {
