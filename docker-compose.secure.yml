@@ -19,6 +19,7 @@ services:
     # SECURITY: Enterprise certificate persistence (production)
     volumes:
       - ./certificates/enterprise:/opt/enterprise-certs:ro,consistent
+      - ./secrets:/secrets:ro,consistent  # Fallback for Docker-in-LXC environments
     
     # SECURITY: Docker secrets integration for sensitive configuration
     secrets:
@@ -52,8 +53,8 @@ services:
       # REMOVED MKNOD and SYS_ADMIN - FFmpeg does not need these
       # AppArmor provides the necessary confinement
     
-    # SECURITY: Non-root user
-    user: "1000:1000"
+    # SECURITY: Non-root user (now handled by entrypoint script for Docker-in-LXC compatibility)
+    # user: "1000:1000"
     
     # SECURITY: Read-only root filesystem
     read_only: true
@@ -78,6 +79,7 @@ services:
       - TLS_ENABLED=true                 # Enable HTTPS/TLS transport security
       - ENABLE_HTTPS_REDIRECT=false      # HTTP to HTTPS redirect (disabled for development)
       - SECCOMP_PROFILE=api-server-refined  # Refined Seccomp syscall filtering profile
+      - ALLOWED_HOSTS=localhost,127.0.0.1,10.2.88.150,0.0.0.0  # Include LXC container IP for external access
     
     # SECURITY: Process isolation
     pid: "host"
@@ -106,24 +108,26 @@ services:
   
   # Ultra-Secure Redis - Memory-only with encryption
   redis-secure:
-    image: redis:7-alpine
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM redis:7-alpine
+        COPY redis/docker-entrypoint.sh /docker-entrypoint.sh
+        RUN chmod +x /docker-entrypoint.sh
+        ENTRYPOINT ["/docker-entrypoint.sh"]
     
     # SECURITY: Pure memory storage
     tmpfs:
       - /data:size=2g,noexec,nosuid,nodev,noatime
       - /tmp:size=512m,noexec,nosuid,nodev,noatime
     
+    # SECURITY: Volume fallback for Docker-in-LXC environments
+    volumes:
+      - ./secrets:/secrets:ro,consistent
+    
     # SECURITY: Docker secrets for Redis authentication
     secrets:
       - redis_password
-    
-    # SECURITY: Redis configuration for maximum security with password authentication
-    command: >
-      sh -c '
-      echo "Loading Redis password from Docker secret..." &&
-      REDIS_PASSWORD=$$(cat /run/secrets/redis_password) &&
-      exec redis-server --requirepass "$$REDIS_PASSWORD" --save "" --appendonly no --maxmemory 1g --maxmemory-policy allkeys-lru --tcp-backlog 128 --timeout 300 --tcp-keepalive 60 --bind 0.0.0.0 --protected-mode yes --port 6379
-      '
     
     # SECURITY: Container hardening
     security_opt:
@@ -134,8 +138,8 @@ services:
       - SETUID
       - SETGID
     
-    # SECURITY: Non-root user
-    user: "999:999"
+    # SECURITY: Non-root user (handled by entrypoint for Docker-in-LXC compatibility)
+    # user: "999:999"
     
     # SECURITY: Read-only root filesystem
     read_only: true
@@ -185,7 +189,10 @@ services:
     profiles:
       - testing
 
-# SECURITY: Controlled external access for API functionality while maintaining isolation
+# SECURITY: Network configuration optimized for LXC deployment
+# - host_binding_ipv4: "0.0.0.0" enables external access from LXC host (10.2.88.150)
+# - ALLOWED_HOSTS includes LXC container IP for FastAPI host validation
+# - Bridge network maintains container isolation while allowing necessary connectivity
 networks:
   secure-encoding-net:
     driver: bridge
@@ -197,7 +204,7 @@ networks:
     driver_opts:
       com.docker.network.bridge.enable_icc: "true"
       com.docker.network.bridge.enable_ip_masquerade: "false"
-      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
 
 # SECURITY: No named volumes - everything in tmpfs
 volumes: {}

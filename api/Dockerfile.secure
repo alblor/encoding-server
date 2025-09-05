@@ -19,6 +19,7 @@ RUN apk update --no-cache && \
         util-linux \
         apparmor \
         apparmor-utils \
+        su-exec \
         && \
     apk del --no-cache apk-tools && \
     rm -rf /var/cache/apk/* /tmp/* /var/tmp/* /root/.cache
@@ -37,6 +38,10 @@ COPY security/install-apparmor.sh /usr/local/bin/install-apparmor.sh
 RUN chmod 644 /etc/apparmor.d/ffmpeg-isolated && \
     chmod +x /usr/local/bin/install-apparmor.sh && \
     mkdir -p /var/log/apparmor
+
+# Copy entrypoint script (must be done as root)
+COPY api/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Install Python dependencies as non-root user
 USER encodinguser
@@ -65,5 +70,8 @@ RUN find /app -name "*.pyc" -delete && \
 # Expose only necessary port
 EXPOSE 8000
 
-# Security: Use exec form, non-root user, and primary main file
-ENTRYPOINT ["python3", "main.py"]
+# CRITICAL: Switch back to root for entrypoint initialization (Docker-in-LXC secret copying)
+USER root
+
+# Security: Use secure entrypoint for Docker-in-LXC compatibility
+ENTRYPOINT ["/docker-entrypoint.sh"]

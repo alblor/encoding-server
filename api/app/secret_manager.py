@@ -34,24 +34,40 @@ class SecretManager:
     
     def __init__(self, secrets_path: str = "/run/secrets", cache_ttl: int = 300):
         """
-        Initialize the SecretManager.
+        Initialize the SecretManager with support for multiple fallback paths.
         
         Args:
-            secrets_path: Path where Docker mounts secrets (default: /run/secrets)
+            secrets_path: Primary path where Docker mounts secrets (default: /run/secrets)
             cache_ttl: Cache time-to-live in seconds (default: 300s = 5min)
         """
-        self.secrets_path = Path(secrets_path)
         self.cache_ttl = cache_ttl
         self._cache: Dict[str, Dict] = {}
         self._cache_lock = Lock()
         self._required_secrets: Set[str] = set()
         self._health_status = {"healthy": True, "last_check": time.time(), "errors": []}
         
-        # Log initialization
-        if self.secrets_path.exists():
-            logger.info(f"🔐 SecretManager initialized with Docker secrets at {secrets_path}")
-        else:
-            logger.warning(f"⚠️  Secrets path {secrets_path} does not exist - running without Docker secrets")
+        # Define multiple secret paths in order of preference (Docker-in-LXC support)
+        self.secret_paths = [
+            Path(os.environ.get("SECURE_SECRETS_PATH", "/tmp/secure-secrets")),  # LXC fallback (tmpfs)
+            Path(secrets_path),                                                  # Standard Docker secrets
+            Path("./secrets"),                                                   # Local development fallback
+        ]
+        
+        # Find the first available path and log status
+        self.primary_path = None
+        for i, path in enumerate(self.secret_paths):
+            if path.exists() and path.is_dir():
+                self.primary_path = path
+                path_type = ["tmpfs fallback", "Docker secrets", "local development"][i]
+                logger.info(f"🔐 SecretManager using {path_type} at: {path}")
+                break
+        
+        if not self.primary_path:
+            logger.warning("⚠️  No secrets directory found - will use environment variable fallback")
+            self.primary_path = Path(secrets_path)  # Default fallback for error handling
+        
+        # Legacy compatibility - maintain secrets_path for backward compatibility
+        self.secrets_path = self.primary_path
         
         # Start health monitoring thread
         self._start_health_monitor()
@@ -92,38 +108,62 @@ class SecretManager:
                     del self._cache[secret_name]
                     logger.debug(f"Cache expired for secret '{secret_name}'")
         
-        # Try to read from Docker secrets
-        secret_file = self.secrets_path / secret_name
+        # Try to read from multiple secret paths in order of preference
+        last_error = None
+        for i, path in enumerate(self.secret_paths):
+            secret_file = path / secret_name
+            
+            if secret_file.exists() and secret_file.is_file():
+                try:
+                    # Read secret value
+                    secret_value = secret_file.read_text().strip()
+                    
+                    if not secret_value:
+                        logger.warning(f"Secret file {secret_file} is empty")
+                        continue  # Try next path
+                    
+                    # Cache the value
+                    with self._cache_lock:
+                        self._cache[secret_name] = {
+                            "value": secret_value,
+                            "timestamp": time.time(),
+                            "file_hash": self._get_file_hash(secret_file)
+                        }
+                    
+                    path_type = ["tmpfs fallback", "Docker secrets", "local development"][i]
+                    logger.info(f"🔑 Secret '{secret_name}' loaded successfully from {path_type}")
+                    return secret_value
+                    
+                except PermissionError as e:
+                    logger.warning(f"Permission denied reading {secret_file}: {e}")
+                    last_error = e
+                    continue  # Try next path
+                except Exception as e:
+                    error_msg = f"Failed to read secret '{secret_name}' from {secret_file}: {e}"
+                    logger.warning(error_msg)
+                    last_error = e
+                    continue  # Try next path
         
-        if secret_file.exists() and secret_file.is_file():
-            try:
-                # Read secret value
-                secret_value = secret_file.read_text().strip()
-                
-                if not secret_value:
-                    raise ValueError(f"Secret file {secret_name} is empty")
-                
-                # Cache the value
+        # Fallback to environment variable (Docker-in-LXC compatibility)
+        env_var_name = secret_name.upper()
+        if env_var_name in os.environ:
+            env_value = os.environ[env_var_name].strip()
+            if env_value:
+                logger.info(f"🔑 Secret '{secret_name}' loaded from environment variable")
+                # Cache the environment variable value
                 with self._cache_lock:
                     self._cache[secret_name] = {
-                        "value": secret_value,
+                        "value": env_value,
                         "timestamp": time.time(),
-                        "file_hash": self._get_file_hash(secret_file)
+                        "file_hash": "env_variable"  # Special marker for env vars
                     }
-                
-                logger.info(f"🔑 Secret '{secret_name}' loaded successfully from Docker secrets")
-                return secret_value
-                
-            except Exception as e:
-                error_msg = f"Failed to read secret '{secret_name}': {e}"
-                logger.error(error_msg)
-                
-                if required:
-                    raise SecretNotFoundError(error_msg)
-                return ""
+                return env_value
         
-        # Secret file not found
-        error_msg = f"Secret file '{secret_name}' not found at {secret_file}"
+        # Secret not found anywhere
+        tried_paths = [str(path / secret_name) for path in self.secret_paths]
+        error_msg = f"Secret '{secret_name}' not found in any location: {tried_paths}"
+        if last_error:
+            error_msg += f" (last error: {last_error})"
         
         if required:
             logger.error(f"❌ {error_msg}")
