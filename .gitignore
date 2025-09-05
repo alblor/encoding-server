@@ -111,6 +111,16 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
+# Test data stubs (binary test files)
+tests/data/stubs/*.bin
+tests/data/stubs/*.dat
+
+# Release artifacts
+release/
+Container.zip
+*.tar.gz
+*.zip
+
 # Documentation builds
 docs/_build/
 site/
