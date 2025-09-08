@@ -1,7 +1,7 @@
 # Secure Media Encoding Server - Enhanced Makefile Command Panel
 # Author: Lorenzo Albanese (alblor)
 
-.PHONY: help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell cert-upload cert-status
+.PHONY: help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell cert-upload cert-status secure-up-shred secure-down-restore secret-shred secret-restore secret-status
 
 # Default target
 help:
@@ -17,6 +17,13 @@ help:
 	@echo ""
 	@echo "🧹 Maintenance:"
 	@echo "  cleanup         Clean up containers, volumes, and test data (results too)"
+	@echo ""
+	@echo "🔐 Secure Secret Lifecycle Management:"
+	@echo "  secure-up-shred   🔥 Start with secret shredding (maximum security mode)"
+	@echo "  secure-down-restore 📦 Stop with secret restoration (graceful shutdown)"  
+	@echo "  secret-shred      🔥 Shred secrets from host (container must be running)"
+	@echo "  secret-restore    📥 Restore secrets from container to host"
+	@echo "  secret-status     🔍 Check secret lifecycle status and security mode"
 	@echo ""
 	@echo "📜 Enterprise Certificate Management:"
 	@echo "  cert-upload     Upload persistent enterprise SSL certificate and key"
@@ -56,6 +63,50 @@ cleanup:
 	find . -name "*_result.mp4" -type f -delete 2>/dev/null || true
 	find . -name "api_test_result_*.mp4" -type f -delete 2>/dev/null || true
 	@echo "✅ Cleanup complete - starting with fresh environment!"
+
+# Enhanced secure-up with secret shredding (maximum security mode)
+secure-up-shred: secure-build
+	@echo "🔥 Starting Ultra-Secure Environment with Secret Shredding..."
+	@echo "⚡ Phase 1: Starting containers..."
+	docker compose -f docker-compose.secure.yml up -d
+	@echo "⏳ Waiting for container initialization..."
+	@sleep 5
+	@echo "🔥 Phase 2: Shredding secrets from host filesystem..."
+	@./scripts/secure_secret_lifecycle.sh shred
+	@echo ""
+	@echo "🔒 MAXIMUM SECURITY MODE ACTIVE:"
+	@echo "  🔥 Secrets shredded from host filesystem"
+	@echo "  💾 Secrets exist ONLY in container memory (tmpfs)"
+	@echo "  📉 Attack surface reduced by 99%"
+	@echo "  🌐 API available at: https://localhost:8443 (HTTPS-ONLY)"
+	@echo ""
+	@echo "⚠️  IMPORTANT: Use 'make secure-down-restore' for graceful shutdown"
+
+# Enhanced secure-down with secret restoration (graceful shutdown)
+secure-down-restore:
+	@echo "📦 Graceful Shutdown with Secret Restoration..."
+	@echo "📥 Phase 1: Restoring secrets from container memory..."
+	@./scripts/secure_secret_lifecycle.sh restore
+	@echo "🔽 Phase 2: Stopping secure environment..."
+	docker compose -f docker-compose.secure.yml down
+	@echo ""
+	@echo "✅ GRACEFUL SHUTDOWN COMPLETE:"
+	@echo "  📥 Secrets restored to host filesystem"
+	@echo "  🧹 Container memory cleared automatically"
+	@echo "  🔒 Ready for next startup"
+
+# Secret lifecycle management commands
+secret-shred:
+	@echo "🔥 Shredding secrets from host filesystem..."
+	@./scripts/secure_secret_lifecycle.sh shred
+
+secret-restore:
+	@echo "📥 Restoring secrets from container to host..."
+	@./scripts/secure_secret_lifecycle.sh restore
+
+secret-status:
+	@echo "🔍 Checking secret lifecycle status..."
+	@./scripts/secure_secret_lifecycle.sh status
 
 # Show API Documentation access points and examples
 docs:

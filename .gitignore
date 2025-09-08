@@ -125,5 +125,16 @@ Container.zip
 docs/_build/
 site/
 
-# Visual Studio autocomplete AI tools
+# Claude AI related files - private development documentation
 CLAUDE.md
+.claude/
+
+# Additional private files
+.secrets.backup/
+SIMPLE_LXC_DEPLOYMENT.md
+901.rtf
+
+# Test media and results directories
+tests/data/media/
+tests/results/
+tests/integration/results/

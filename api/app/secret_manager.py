@@ -278,16 +278,83 @@ class SecretManager:
         monitor_thread.start()
         logger.info("🏥 SecretManager health monitoring started")
     
+    def get_lifecycle_status(self) -> Dict:
+        """
+        Check secret lifecycle status to determine if secrets are shredded on host.
+        
+        Returns:
+            Dictionary containing lifecycle information
+        """
+        # Check host filesystem for shredded secrets
+        host_secrets_path = Path("./secrets")  # Host filesystem path
+        shred_marker = "SHREDDED_FOR_SECURITY"
+        
+        secret_status = {}
+        total_secrets = 0
+        shredded_secrets = 0
+        
+        # Check each required secret on host filesystem
+        secret_names = ["jwt_secret", "encryption_master_key", "redis_password", "api_master_key"]
+        
+        for secret_name in secret_names:
+            total_secrets += 1
+            host_secret_file = host_secrets_path / secret_name
+            
+            if host_secret_file.exists():
+                try:
+                    content = host_secret_file.read_text().strip()
+                    if content.startswith(shred_marker):
+                        secret_status[secret_name] = "SHREDDED"
+                        shredded_secrets += 1
+                    else:
+                        secret_status[secret_name] = "ON_DISK"
+                except Exception:
+                    secret_status[secret_name] = "UNKNOWN"
+            else:
+                secret_status[secret_name] = "MISSING"
+        
+        # Determine overall security mode
+        if shredded_secrets == total_secrets:
+            security_mode = "MAXIMUM_SECURITY"
+            security_description = "Secrets exist only in container memory (tmpfs)"
+            attack_surface = "MINIMAL"
+        elif shredded_secrets > 0:
+            security_mode = "MIXED_SECURITY"
+            security_description = f"{shredded_secrets}/{total_secrets} secrets shredded"
+            attack_surface = "ELEVATED"
+        else:
+            security_mode = "STANDARD_SECURITY"  
+            security_description = "Secrets stored on host filesystem"
+            attack_surface = "STANDARD"
+        
+        return {
+            "security_mode": security_mode,
+            "security_description": security_description,
+            "attack_surface": attack_surface,
+            "total_secrets": total_secrets,
+            "shredded_secrets": shredded_secrets,
+            "disk_secrets": total_secrets - shredded_secrets,
+            "secret_details": secret_status,
+            "memory_only_operation": shredded_secrets == total_secrets,
+            "disk_exposure_reduced": f"{(shredded_secrets/total_secrets)*100:.1f}%" if total_secrets > 0 else "0%"
+        }
+    
     def get_status_summary(self) -> Dict:
         """Get a summary of the current secret manager status."""
         with self._cache_lock:
-            return {
+            base_status = {
                 "secrets_path": str(self.secrets_path),
                 "path_exists": self.secrets_path.exists(),
                 "cached_secrets_count": len(self._cache),
                 "required_secrets_count": len(self._required_secrets),
                 "health_status": self._health_status.copy()
             }
+            
+            # Add lifecycle status
+            lifecycle_status = self.get_lifecycle_status()
+            base_status["lifecycle"] = lifecycle_status
+            
+            return base_status
     
     def __str__(self) -> str:
         """String representation of SecretManager."""
