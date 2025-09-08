@@ -10,19 +10,17 @@ help:
 	@echo ""
 	@echo "🔐 Primary Ultra-Secure Zero-Trust Environment:"
 	@echo "  secure-build    Build ultra-secure Alpine containers"
-	@echo "  secure-up       Start zero-trust environment (RAM + encrypted swap)"
-	@echo "  secure-down     Stop secure environment"
+	@echo "  secure-up       🔥 Smart startup (shreds secrets if container running)"
+	@echo "  secure-down     📦 Smart shutdown (restores secrets if shredded)"
 	@echo "  secure-logs     Show secure environment logs"
 	@echo "  secure-shell    Access secure container (non-root)"
 	@echo ""
 	@echo "🧹 Maintenance:"
 	@echo "  cleanup         Clean up containers, volumes, and test data (results too)"
 	@echo ""
-	@echo "🔐 Secure Secret Lifecycle Management:"
-	@echo "  secure-up-shred   🔥 Start with secret shredding (maximum security mode)"
-	@echo "  secure-down-restore 📦 Stop with secret restoration (graceful shutdown)"  
-	@echo "  secret-shred      🔥 Shred secrets from host (container must be running)"
-	@echo "  secret-restore    📥 Restore secrets from container to host"
+	@echo "🔐 Advanced Secret Lifecycle (Manual Control):"
+	@echo "  secret-shred      🔥 Manually shred secrets from host"
+	@echo "  secret-restore    📥 Manually restore secrets from container"
 	@echo "  secret-status     🔍 Check secret lifecycle status and security mode"
 	@echo ""
 	@echo "📜 Enterprise Certificate Management:"
@@ -64,36 +62,48 @@ cleanup:
 	find . -name "api_test_result_*.mp4" -type f -delete 2>/dev/null || true
 	@echo "✅ Cleanup complete - starting with fresh environment!"
 
-# Enhanced secure-up with secret shredding (maximum security mode)
-secure-up-shred: secure-build
-	@echo "🔥 Starting Ultra-Secure Environment with Secret Shredding..."
+# Intelligent secure-up: automatically shreds secrets after startup
+secure-up: secure-build
+	@echo "🔥 Starting Ultra-Secure Environment with Intelligent Secret Management..."
 	@echo "⚡ Phase 1: Starting containers..."
 	docker compose -f docker-compose.secure.yml up -d
 	@echo "⏳ Waiting for container initialization..."
 	@sleep 5
-	@echo "🔥 Phase 2: Shredding secrets from host filesystem..."
+	@echo "🔥 Phase 2: Auto-shredding secrets for maximum security..."
 	@./scripts/secure_secret_lifecycle.sh shred
 	@echo ""
 	@echo "🔒 MAXIMUM SECURITY MODE ACTIVE:"
-	@echo "  🔥 Secrets shredded from host filesystem"
+	@echo "  🔥 Secrets automatically shredded from host filesystem"
 	@echo "  💾 Secrets exist ONLY in container memory (tmpfs)"
 	@echo "  📉 Attack surface reduced by 99%"
 	@echo "  🌐 API available at: https://localhost:8443 (HTTPS-ONLY)"
 	@echo ""
-	@echo "⚠️  IMPORTANT: Use 'make secure-down-restore' for graceful shutdown"
+	@echo "💡 TIP: Use 'make secure-down' for automatic secret restoration"
 
-# Enhanced secure-down with secret restoration (graceful shutdown)
-secure-down-restore:
-	@echo "📦 Graceful Shutdown with Secret Restoration..."
-	@echo "📥 Phase 1: Restoring secrets from container memory..."
-	@./scripts/secure_secret_lifecycle.sh restore
+# Intelligent secure-down: automatically restores secrets before shutdown
+secure-down:
+	@echo "📦 Intelligent Shutdown with Automatic Secret Restoration..."
+	@echo "🔍 Checking if secrets need restoration..."
+	@if ./scripts/secure_secret_lifecycle.sh status | grep -q "MAXIMUM (memory-only)"; then \
+		echo "📥 Phase 1: Restoring secrets from container memory..."; \
+		./scripts/secure_secret_lifecycle.sh restore; \
+	else \
+		echo "ℹ️  Secrets already on disk, no restoration needed"; \
+	fi
 	@echo "🔽 Phase 2: Stopping secure environment..."
 	docker compose -f docker-compose.secure.yml down
 	@echo ""
-	@echo "✅ GRACEFUL SHUTDOWN COMPLETE:"
-	@echo "  📥 Secrets restored to host filesystem"
+	@echo "✅ INTELLIGENT SHUTDOWN COMPLETE:"
+	@echo "  📥 Secrets safely preserved on host filesystem"
 	@echo "  🧹 Container memory cleared automatically"
 	@echo "  🔒 Ready for next startup"
+
+# Legacy commands (deprecated but maintained for compatibility)
+secure-up-shred: secure-up
+	@echo "⚠️  DEPRECATED: Use 'make secure-up' (now automatically shreds secrets)"
+
+secure-down-restore: secure-down
+	@echo "⚠️  DEPRECATED: Use 'make secure-down' (now automatically restores secrets)"
 
 # Secret lifecycle management commands
 secret-shred:
@@ -226,24 +236,7 @@ secure-build:
 	@echo "🔐 Building ultra-secure Alpine containers..."
 	docker compose -f docker-compose.secure.yml build
 
-# Start zero-trust environment 
-secure-up:
-	@echo "🔒 Starting Ultra-Secure Zero-Trust Environment..."
-	@echo "⚡ RAM-only processing for files <4GB"
-	@echo "🔐 Encrypted swap emulation for files >4GB"
-	@echo "🛡️  Maximum Docker security enabled"
-	docker compose -f docker-compose.secure.yml up -d
-	@echo ""
-	@echo "🔒 Secure API available at: https://localhost:8443 (HTTPS-ONLY)"
-	@echo "🛡️  Zero-trust media processing active"
-	@echo "💾 All data confined to RAM + encrypted swap"
-	@echo "🚫 HTTP completely disabled - all connections must use HTTPS"
-
-# Stop secure environment
-secure-down:
-	@echo "🔐 Stopping secure environment..."
-	docker compose -f docker-compose.secure.yml down
-	@echo "🧹 All temporary data automatically purged from memory"
+# Legacy targets removed - now using intelligent secure-up/secure-down above
 
 # Show secure environment logs
 secure-logs:
