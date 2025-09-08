@@ -1,11 +1,13 @@
-# Proxmox-Optimized Secure Media Encoding Server
+# Secure Media Encoding Server (RAM)
+
+![Logo](logo.png)
 
 **A zero-trust, privacy-first media processing infrastructure with dual-mode encryption**
 
 [![Quality Score (by Claude Code)](https://img.shields.io/badge/Quality-95.87%25-brightgreen)](.)
 [![Test Coverage (by Claude Code)](https://img.shields.io/badge/Tests-96.2%25-brightgreen)](.)
 [![Security](https://img.shields.io/badge/Security-Maximum-red)](.)
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-blue)](./LICENSE.txt)
 
 ## Overview
 
@@ -230,7 +232,7 @@ This project follows enterprise-grade development practices:
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the [LICENSE.txt](LICENSE.txt) file for details.
 
 ## Attribution
 
