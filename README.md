@@ -4,7 +4,7 @@
 
 **A zero-trust, privacy-first media processing infrastructure with dual-mode encryption**
 
-[![Latest Release](https://img.shields.io/github/v/release/yourusername/encoding-server?label=Version)](../../releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/alblor/encoding-server?label=Version)](../../releases/latest)
 [![Quality Score (by Claude Code)](https://img.shields.io/badge/Quality-95.87%25-brightgreen)](.)
 [![Test Coverage (by Claude Code)](https://img.shields.io/badge/Tests-96.2%25-brightgreen)](.)
 [![Security](https://img.shields.io/badge/Security-Maximum-red)](.)
