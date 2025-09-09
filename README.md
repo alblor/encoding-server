@@ -4,6 +4,7 @@
 
 **A zero-trust, privacy-first media processing infrastructure with dual-mode encryption**
 
+[![Latest Release](https://img.shields.io/github/v/release/yourusername/encoding-server?label=Version)](../../releases/latest)
 [![Quality Score (by Claude Code)](https://img.shields.io/badge/Quality-95.87%25-brightgreen)](.)
 [![Test Coverage (by Claude Code)](https://img.shields.io/badge/Tests-96.2%25-brightgreen)](.)
 [![Security](https://img.shields.io/badge/Security-Maximum-red)](.)
@@ -238,7 +239,7 @@ This project is licensed under the GNU Affero General Public License v3.0 (AGPL-
 
 **Author**: Lorenzo Albanese (alblor)  
 **Owner**: Lorenzo Albanese (alblor)  
-**Version**: 1.0.0  
+**Version**: [Latest Release](../../releases/latest) | [All Releases](../../releases)  
 **Architecture**: Python backend with Redis and FastAPI
 
 ---
