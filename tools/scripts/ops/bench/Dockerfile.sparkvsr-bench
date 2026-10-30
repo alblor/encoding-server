@@ -1,0 +1,19 @@
+# Throwaway benchmark image for the M3 SparkVSR gate. Not the production worker:
+# that one gets its own image (restore-worker/) with no egress and a pinned SVT-AV1.
+# Build context is a checkout of github.com/taco-group/SparkVSR (needs requirements.txt).
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ffmpeg git libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# The inference script imports pyiqa at the top (for its optional metrics) but upstream's
+# requirements.txt does not list it.
+RUN pip install --no-cache-dir pyiqa
+
+# Hugging Face runs offline: weights are mounted from the host, nothing is fetched at run time.
+ENV HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1
+WORKDIR /work
