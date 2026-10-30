@@ -7,7 +7,9 @@ services:
       context: .
       dockerfile: api/Dockerfile.secure
     ports:
-      - "8443:8443"    # HTTPS port only (HTTP completely disabled)
+      # HTTPS only. Bound to loopback unless API_BIND_ADDR names the address clients reach this host on
+      # (see .env.example). Never leave it on 0.0.0.0 on a machine that is not behind a firewall.
+      - "${API_BIND_ADDR:-127.0.0.1}:8443:8443"
     
     # SECURITY: Pure tmpfs storage - nothing touches host disk
     tmpfs:
@@ -79,7 +81,7 @@ services:
       - TLS_ENABLED=true                 # Enable HTTPS/TLS transport security
       - ENABLE_HTTPS_REDIRECT=false      # HTTP to HTTPS redirect (disabled for development)
       - SECCOMP_PROFILE=api-server-refined  # Refined Seccomp syscall filtering profile
-      - ALLOWED_HOSTS=localhost,127.0.0.1,10.2.88.150,0.0.0.0  # Include LXC container IP for external access
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}  # Add the address clients use, via .env
     
     # SECURITY: Process isolation
     pid: "host"
@@ -189,9 +191,10 @@ services:
     profiles:
       - testing
 
-# SECURITY: Network configuration optimized for LXC deployment
-# - host_binding_ipv4: "0.0.0.0" enables external access from LXC host (10.2.88.150)
-# - ALLOWED_HOSTS includes LXC container IP for FastAPI host validation
+# SECURITY: Network configuration
+# - Published ports bind to API_BIND_ADDR (default 127.0.0.1); host_binding_ipv4 below only sets the
+#   fallback for a port published without an address, and is loopback as well
+# - ALLOWED_HOSTS comes from .env so no deployment address lives in a tracked file
 # - Bridge network maintains container isolation while allowing necessary connectivity
 networks:
   secure-encoding-net:
@@ -204,7 +207,7 @@ networks:
     driver_opts:
       com.docker.network.bridge.enable_icc: "true"
       com.docker.network.bridge.enable_ip_masquerade: "false"
-      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 
 # SECURITY: No named volumes - everything in tmpfs
 volumes: {}
