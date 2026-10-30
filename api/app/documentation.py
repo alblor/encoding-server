@@ -121,6 +121,19 @@ class DocumentationManager:
                 "Real-time job processing with async queue management",
                 "Comprehensive error handling and security audit trails"
             ],
+            "planned_features": {
+                "status": "planned",
+                "note": (
+                    "Not available yet. Listed for information only, no endpoint "
+                    "described here exists in this version."
+                ),
+                "restoration_pipeline": (
+                    "Video restoration and upscale to 2160p with AV1 output, driven by "
+                    "a JSON recipe and processed as one job per scene-aligned segment. "
+                    "NVIDIA GPUs are an optional compute device, the default stack does "
+                    "not require them."
+                )
+            },
             "quick_start": {
                 "1_health_check": {
                     "description": "Verify service availability",
