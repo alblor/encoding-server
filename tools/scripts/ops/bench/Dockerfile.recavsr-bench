@@ -1,0 +1,18 @@
+# Throwaway evaluation image for ReCaVSR (github.com/kopperx/ReCaVSR). Not the production worker.
+# It has its own venv from the repo's uv.lock (torch 2.10 / CUDA 13), so it cannot disturb the
+# torch 2.8 / CUDA 12.8 image used for SparkVSR. Run it with no network and weights mounted read-only.
+FROM python:3.11-slim-bookworm
+
+# gcc and the Python headers are needed at run time: Triton compiles a small C launcher on first use.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      git ffmpeg curl ca-certificates build-essential python3-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir uv
+
+WORKDIR /opt/recavsr
+RUN git clone --depth 1 https://github.com/kopperx/ReCaVSR.git . \
+ && git rev-parse HEAD > /opt/recavsr/COMMIT \
+ && uv sync --locked
+
+ENV HF_HUB_OFFLINE=1 PYTHONUNBUFFERED=1

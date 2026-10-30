@@ -15,7 +15,8 @@
 set -eu
 
 LABEL=$1; W=$2; H=$3; UP=$4; TH=$5; TW=$6; CHUNK=$7; GPU=$8; shift 8
-FRAMES=49
+FRAMES=${FRAMES:-49}   # frames cut from the source clip
+CLIPS=${CLIPS:-"a b"}  # one name per clip; "a" alone skips the warm second pass
 WORK=/dev/shm/bench/$LABEL
 CODE=/srv/src/SparkVSR
 MODELS=/srv/models/sparkvsr
@@ -24,9 +25,12 @@ IMG=sparkvsr-bench
 
 rm -rf "$WORK" && mkdir -p "$WORK/in" "$WORK/out"
 
-for n in a b; do
-  docker run --rm -v "$CODE/test_input:/src:ro" -v "$WORK/in:/dst" "$IMG" \
-    ffmpeg -v error -y -i /src/01.mp4 -vf "scale=${W}:${H}:flags=lanczos,format=yuv420p" \
+# CLIP_SRC_DIR / CLIP_SRC_NAME pick another source clip; WIDTH=0 keeps its native size.
+CLIP_SRC_DIR=${CLIP_SRC_DIR:-$CODE/test_input}; CLIP_SRC_NAME=${CLIP_SRC_NAME:-01.mp4}
+VF="scale=${W}:${H}:flags=lanczos,format=yuv420p"; [ "$W" = 0 ] && VF="format=yuv420p"
+for n in $CLIPS; do
+  docker run --rm -v "$CLIP_SRC_DIR:/src:ro" -v "$WORK/in:/dst" "$IMG" \
+    ffmpeg -v error -y -i "/src/$CLIP_SRC_NAME" -vf "$VF" \
     -frames:v "$FRAMES" -c:v libx264 -crf 10 "/dst/$n.mp4"
 done
 
