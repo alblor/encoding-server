@@ -17,8 +17,8 @@
 
 ## Support files and secrets
 
-- Utility scripts, fixtures, seeds and scratch work go under `tools/` (`tools/scripts/{dev,data,ops}`, `tools/fixtures/{inputs,expected}`, `tools/seeds/{dev,test}`, `tools/sandbox/` ephemeral and gitignored, `tools/other/` is the owner's). Never in the root, `api/`, or ad-hoc folders. `tools/` exists since 2026-10-30 (GPU smoke test and SparkVSR benchmark scripts); its index is `tools/CLAUDE.md`.
-- Secrets only through Docker secrets (`./secrets/`) and, for local helper scripts, `.secrets/` (gitignored by convention). Never in tracked files, never in `tools/`. Scripts read `os.environ["KEY"]`; placeholders go in `.env.example`, which the repo does not have because no env var carries a secret today.
+- Utility scripts, fixtures, seeds and scratch work go under `tools/` (`tools/scripts/{dev,data,ops}`, `tools/fixtures/{inputs,expected}`, `tools/seeds/{dev,test}`, `tools/sandbox/` ephemeral and gitignored, `tools/other/` is the owner's). Never in the root, `api/`, or ad-hoc folders. `tools/` exists since 2026-10-30 (GPU smoke and thermal checks, benchmark scripts, quality comparison scripts). Every script opens with a docstring that says what it does and how to run it, so a clone can use `tools/` without anything else. The file index lives in the folder guide `tools/CLAUDE.md`, which is private: `.gitignore` hides every `CLAUDE.md`, so do not link to it from tracked text as if clones had it.
+- Secrets only through Docker secrets (`./secrets/`) and, for local helper scripts, `.secrets/` (gitignored by convention). Never in tracked files, never in `tools/`. Scripts read `os.environ["KEY"]`. `.env.example` exists since ISSUE-028 and holds placeholders for deployment settings only (`API_BIND_ADDR`, `ALLOWED_HOSTS`): still no env var carries a secret, those stay Docker secrets.
 - Note: `.gitignore` covers `secrets/` and `.env` but not `.secrets/` or `tools/sandbox/` yet (MIN-020).
 
 ## Documentation

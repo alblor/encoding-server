@@ -17,7 +17,7 @@ One RTX 5080 per run, torch 2.8.0+cu128, bf16, SparkVSR S2 weights, `ref_mode=no
 
 Estimate, not a measurement: a 2 h film at 24 fps is about 172,800 frames, so 6.9 s/frame gives about 13.8 days on one GPU, about 7 days on two, and about 8 days with 8-frame chunk overlap. That is roughly half of the earlier upper bound (about 15 days on 2 GPUs, extrapolated from a 3090 community report), though still days and not "hours". Cost scales with TARGET pixels, so 1080p to 2160p costs the same per frame as 540p to 2160p. A restore at a 1080p target followed by a Lanczos resize to 2160p would cost about 4x less (about 1.7 days per film), but that is a quality trade-off nobody has tested (IDEA-034).
 
-INQUIRY-017 stays in progress on purpose: its definition is a hard gate at the END of M3, and these figures come from a patched upstream script with a naive swap, not from the stage-major streamer that will ship. The gate closes with the number measured on that streamer.
+INQUIRY-017 stays in progress on purpose: its definition is a hard gate at the END of M3, and these figures come from a patched upstream script with a naive swap, not from the stage-major streamer that will ship. The gate closes with the number measured on that streamer. Update 2026-10-30: the gate is now measured per engine, since SparkVSR was demoted to optional (VAE spike below) and ReCaVSR has an estimate only (`recavsr-evaluation.md`).
 
 ## Hard constraints found
 
@@ -38,12 +38,31 @@ Synthetic 3072 to 12288 linear layer, 16384 tokens, no real weights, torchao 0.1
 | FP8 dynamic W8A8 | yes | 3.7% | 7.16 ms | 1.47x |
 | NVFP4 (torchao `NVFP4InferenceConfig`) | yes | 22.8% (random data) | 12.41 ms | 0.85x, slower (not compiled, unfused) |
 
-Reported weight bytes were identical for all variants (tensor subclasses), so the memory saving is NOT measured. Since the transformer is only about 13% of the runtime, NVFP4 or FP8 gives at most a few percent end to end. Its real value would be memory (it could avoid the swap), which stage-major scheduling already achieves with no quality risk. INQUIRY-029 stays open at lower priority (P3): revisit it after the VAE is optimised, when the transformer's share rises. The real-weight quality gate is unchanged.
+Reported weight bytes were identical for all variants (tensor subclasses), so the memory saving is NOT measured. Since the transformer is only about 13% of the SparkVSR runtime, NVFP4 or FP8 gives at most a few percent end to end there. INQUIRY-029 is closed with this result (kernel numbers kept above); the question moved to the ReCaVSR transformer, where it matters for speed and memory: INQUIRY-038 (`recavsr-evaluation.md`). The real-weight quality gate is unchanged.
+
+## VAE speed spike (INQUIRY-032, closed 2026-10-30: the VAE is not fixable)
+
+Measured on the CogVideoX VAE alone (encode + decode), one RTX 5080, expressed per megapixel-frame so it scales to any output size:
+
+| Variant | ms per megapixel-frame | Note |
+|---|---|---|
+| tile 512 | about 626 | the current setting |
+| tile 768 | about 659 | larger tiles do not help |
+| tile 1024 | about 691 | slightly worse |
+| fp16 | about 634 | no gain over bf16 |
+| tiling and slicing OFF | OOM | even at 512 px on an empty 16 GB card |
+| `torch.compile` | NOT tested | the runtime image has no C compiler, and the VAE is conv-bound so little gain is expected (IDEA-039) |
+
+A 2160p frame is about 8.3 Mpx, so the VAE alone costs about 5.2 s/frame/GPU. The gate proposed for a whole-film engine was at most 3.0 s/frame/GPU (about 3 days per 2 h film on two GPUs, an estimate). Even a 2x VAE gain would leave SparkVSR near 3.5 s/frame, so it cannot reach it. Outcome: SparkVSR is NOT viable as the primary engine for whole films at 2160p. It stays as an optional engine (`restore.engine: recavsr | sparkvsr | classical | none`), and the owner's reading is that about 7 days per film is too long (owner decision, 2026-10-30).
+
+## Upstream SparkVSR bugs and limits found (matter only if the optional engine is built)
+
+- The temporal chunk merge crashes AFTER all compute is done when the padded frame count leaves a short tail: F=361 with chunk 49 gives a 70-frame last chunk against 69 expected, and F=336 is padded to 337 by the 4n+1 rule and crashes the same way. Frame counts that work are 49+41k with k a multiple of 4 (for example 213). The results of a crashed run are lost.
+- It writes 16 fps by default, so timing has to be rebuilt from the frame index.
+- It held up to about 45 GB of host RAM for a 213 to 336 frame 976x1660 clip, so the windowed streamer stays mandatory for this engine.
 
 ## Next steps (roadmap)
 
-- Stage-major windowed streamer with pinned-memory offload: the M3 core, sub-tasks of FEATURE-006.
-- VAE optimisation spike (larger tiles, tiling off in stage-major, channels_last_3d, torch.compile): INQUIRY-032.
-- PiSA-SR reference quality run; the SD 2.1 base and the `pisa_sr.pkl` weights are still not located: INQUIRY-033.
-- Optional "restore at 1080p then Lanczos" budget recipe field: IDEA-034.
-- The five scripts under `tools/scripts/ops/bench/` are new and uncommitted; indexed in `tools/CLAUDE.md`.
+- Engine-agnostic restore stage with a ReCaVSR tiled streamer first (primary engine), SparkVSR streamer second and optional: sub-tasks of FEATURE-006. Engine decision and residual risk: `recavsr-evaluation.md`.
+- Optional-engine only: PiSA-SR reference quality run (INQUIRY-033), the 1080p budget recipe (IDEA-034), `torch.compile` on the VAE (IDEA-039).
+- The scripts under `tools/scripts/ops/` are new and uncommitted; see the `tools/` folder guide (private) and the docstring at the top of each script.

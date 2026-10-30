@@ -18,7 +18,7 @@ make docs                            # prints the /v1/docs access points
 make cleanup                         # down -v, prune, delete test results (destructive)
 ```
 
-API: `https://localhost:8443` (self-signed certificate, use `curl -k`). Health: `/health`.
+API: `https://localhost:8443` (self-signed certificate, use `curl -k`). Health: `/health`. With the ISSUE-028 working-tree change (uncommitted) the port is published on loopback only; to reach it from another machine copy `.env.example` to `.env` and set `API_BIND_ADDR` and `ALLOWED_HOSTS` to the address clients use.
 
 ## Tests
 

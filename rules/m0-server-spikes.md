@@ -38,6 +38,22 @@ The owner wants to move the LXC storage to a TrueNAS dataset (TrueNAS runs as a 
 - The TrueNAS VM must boot before the LXC.
 - Suggested use for now: read-only weights on an encrypted dataset, mounted into the LXC from the host.
 
+## Thermal and PCIe check (2026-10-30, `tools/scripts/ops/gpu_thermal_check.py`)
+
+Both cards loaded for 120 s with a bf16 matmul loop, sampled with `nvidia-smi`:
+
+| | GPU 0 | GPU 1 |
+|---|---|---|
+| Max temperature | 69 C | 87 C |
+| Fan | 44% | 100% |
+| Power | 308 W | 319 to 332 W |
+| SM clock | 2814 MHz, steady | 2707 to 2797 MHz |
+| Throttle | none | software thermal slowdown bit seen |
+| PCIe under load | gen4 x8 | gen4 x16 |
+| Host-to-device bandwidth | 14.5 GB/s | 28.8 GB/s |
+
+An 11 GB offload takes about 0.8 s on GPU 0 against 0.4 s on GPU 1. GPU 1 ALONE for 240 s with GPU 0 idle still reached 85 C max (average 81.9, last half 83.2), fan 93%, 326 W, clock 2789 MHz, no throttle, so the heat does not come from the neighbour's load. The owner's diagnosis is that the card next to it blocks the airflow. The undervolt or power-cap phase is planned at the END of the project (MIN-037); candidate: a power cap of about 300 W on GPU 1, set on the Proxmox host with `nvidia-smi -pl`, which resets on reboot. Not applied, not tested.
+
 ## Teardown facts (MIN-018)
 
 - `sshd` in the LXC is socket-activated, so teardown must disable BOTH `ssh.socket` and `ssh.service`, otherwise the socket brings it back.
