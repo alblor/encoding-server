@@ -17,7 +17,7 @@
 
 ## Support files and secrets
 
-- Utility scripts, fixtures, seeds and scratch work go under `tools/` (`tools/scripts/{dev,data,ops}`, `tools/fixtures/{inputs,expected}`, `tools/seeds/{dev,test}`, `tools/sandbox/` ephemeral and gitignored, `tools/other/` is the owner's). Never in the root, `api/`, or ad-hoc folders. The `tools/` folder does not exist yet.
+- Utility scripts, fixtures, seeds and scratch work go under `tools/` (`tools/scripts/{dev,data,ops}`, `tools/fixtures/{inputs,expected}`, `tools/seeds/{dev,test}`, `tools/sandbox/` ephemeral and gitignored, `tools/other/` is the owner's). Never in the root, `api/`, or ad-hoc folders. `tools/` exists since 2026-10-30 (GPU smoke test and SparkVSR benchmark scripts); its index is `tools/CLAUDE.md`.
 - Secrets only through Docker secrets (`./secrets/`) and, for local helper scripts, `.secrets/` (gitignored by convention). Never in tracked files, never in `tools/`. Scripts read `os.environ["KEY"]`; placeholders go in `.env.example`, which the repo does not have because no env var carries a secret today.
 - Note: `.gitignore` covers `secrets/` and `.env` but not `.secrets/` or `tools/sandbox/` yet (MIN-020).
 

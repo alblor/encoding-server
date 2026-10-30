@@ -46,4 +46,4 @@ The server was built to encode private family media (VHS digitalizations, old vi
 - Encryption: `ENCRYPTION_MODE` defaults to `dual` (`automated` server-side, `manual` client-side with `client-tools/encrypt_media.py`). No `off` value exists yet (planned, FEATURE-004).
 - Network exposure: compose publishes `8443:8443` on 0.0.0.0 and the bridge sets `host_binding_ipv4: 0.0.0.0`; `ALLOWED_HOSTS` hard-codes a private LXC IP. Fine behind the Proxmox firewall in an LXC, open to the LAN elsewhere (ISSUE-028).
 - Compose currently sets `pid: "host"` on the API service; the reason is not documented (INQUIRY-022).
-- The documented guarantee is "no media on persistent disk", not "no files ever": model weights for the planned worker are public artifacts and are outside it.
+- The documented guarantee is "no media on persistent disk", not "no files ever": model weights for the planned worker are public artifacts and are outside it (they may live on disk; the LXC rootfs was enlarged for them, ISSUE-030).

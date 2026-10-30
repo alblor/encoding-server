@@ -47,7 +47,7 @@ The suite must stay at least this green. Do not trust the README's 96.2% figure,
 
 ## Proxmox / Docker-in-LXC (production target)
 
-Same `make secure-*` flow inside the LXC. AppArmor may be better managed by the outer LXC. GPU passthrough (device nodes, idmap, nvidia-container-toolkit with `no-cgroups = true`) is not set up yet, it is the M0 spike (INQUIRY-003), and the deploy guide `docs/DEPLOY_PROXMOX.md` is written at M6 from what actually worked (FEATURE-009).
+Same `make secure-*` flow inside the LXC. AppArmor may be better managed by the outer LXC. GPU passthrough is set up as of 2026-10-30 (five device nodes via `dev0`..`dev4`, no idmap needed, NVIDIA userspace 580.76.05 from the `.run` with `--no-kernel-modules`, `nvidia-container-toolkit` 1.20.1 with `no-cgroups=true`, Docker 28.4.0): measured facts and the resolved ISSUE-030 storage blocker are in `rules/m0-server-spikes.md`, SparkVSR benchmark numbers in `rules/m3-benchmark.md`. Note that sshd in the LXC is socket-activated, so disable both `ssh.socket` and `ssh.service` at teardown (MIN-018). The deploy guide `docs/DEPLOY_PROXMOX.md` is written at M6 from what actually worked (FEATURE-009).
 
 ## Upgrades and CVE hygiene
 

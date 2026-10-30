@@ -12,7 +12,7 @@ The goal is a configurable video restoration and upscale-to-2160p pipeline with 
 - The whole film goes through SparkVSR. HDR is decided per film later.
 - Media stays in RAM/VRAM while processing. Encryption defaults to ON, with an opt-out.
 - The app is driven by a JSON recipe that is generated per film.
-- Docker-in-LXC is the primary target (unprivileged LXC, host NVIDIA driver already working). Proxmox 9.1 native OCI containers are a technology preview and stay an optional later spike (IDEA-019).
+- Docker-in-LXC is the primary target (unprivileged LXC, host NVIDIA driver already working). Update 2026-10-30: the server runs Proxmox 8.4.14, so native OCI app containers do not exist there and IDEA-019 is closed as moot. Docker-in-LXC is the only path (`m0-server-spikes.md`).
 - Security is the standing priority (owner: "security is key"): speed and convenience never override it.
 - Server access during testing: SSH with a throwaway key, then full teardown (MIN-018).
 
@@ -34,15 +34,20 @@ decode (10-bit) -> optional light classical clean-up -> Lanczos resize to 2160p 
 
 ## Known numbers (facts from the research, not measurements of this project)
 
-- SparkVSR (CogVideoX1.5-5B based): the paper (full text) reports no inference timing, VRAM or FPS. It confirms a one-step pass (t=399) and training on 320x640x33-frame clips. The only speed figure is a community report (issue #28): 588 s for 48 frames at 3456x1920 output, RTX 3090, Windows, BF16, 28 tiles of 512x512 (about 12 s/frame). The roughly 15 days for a 2 h film on 2 GPUs is therefore an upper bound extrapolated from different hardware. The real figure must come from M3 (INQUIRY-017).
-- RTX 5080 is Blackwell sm_120: needs PyTorch >= 2.7 with CUDA 12.8; SparkVSR pins torch 2.5/cu124 (INQUIRY-002).
+- SparkVSR (CogVideoX1.5-5B based): the paper (full text) reports no inference timing, VRAM or FPS. It confirms a one-step pass (t=399) and training on 320x640x33-frame clips. The only speed figure is a community report (issue #28): 588 s for 48 frames at 3456x1920 output, RTX 3090, Windows, BF16, 28 tiles of 512x512 (about 12 s/frame). The roughly 15 days for a 2 h film on 2 GPUs is therefore an upper bound extrapolated from different hardware. The first measured figure on this project's hardware is below and in `m3-benchmark.md`.
+- RTX 5080 is Blackwell sm_120: needs PyTorch >= 2.7 with CUDA 12.8; SparkVSR pins torch 2.5/cu124 (INQUIRY-002). Measured 2026-10-30: `pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime` ships sm_120 and runs bf16 matmul at about 120 TFLOPS per card.
 - 5080 has 16 GB VRAM; a 3090 tiled run peaked at 14.9 GiB allocated.
+- Measured here 2026-10-30 (one 5080, bf16, `no_ref`, 49 frames to 2160p): about 6.9 s/frame swap-free, 9.1 with a naive swap, the VAE being about 87% of the time; about 7 days per 2 h film on two GPUs is an ESTIMATE from that. The model does not fit in 16 GiB with the stock script and the upstream script needs about 34 GB of host RAM per process, so stage-major scheduling and the windowed streamer are required (`m3-benchmark.md`).
 - Dolby Vision is not carried; it falls back to the HDR10 base layer and the probe report flags it.
 
 ## Precision ladder (M3, planned, nothing built)
 
-Recipe field `restore.precision = bf16 | mixed_nvfp4`. BF16 is the baseline. The next rung is mixed NVFP4/BF16 where only the large FFN and attention-projection linears of the middle transformer blocks are NVFP4, while patch embed, first and last blocks, norms, adaLN/timestep modulation, conditioning/keyframe pathways, output projection and the VAE stay BF16. Tooling candidates: NVIDIA TensorRT Model Optimizer NVFP4 PTQ, torchao, or a custom `torch._scaled_mm`. UNVERIFIED: CogVideoX NVFP4 support and sm_120 FP4 kernels in PyTorch. Known risk: a community full-NVFP4 test on an I2V model (LTX-2.3) lost reference fidelity, and SparkVSR is I2V-derived. Acceptance gate: PSNR/LPIPS/DOVER/MUSIQ deltas vs BF16, the flicker metric, and a visual A/B on the TV. Tracked as INQUIRY-029.
+Recipe field `restore.precision = bf16 | mixed_nvfp4`. BF16 is the baseline. The next rung is mixed NVFP4/BF16 where only the large FFN and attention-projection linears of the middle transformer blocks are NVFP4, while patch embed, first and last blocks, norms, adaLN/timestep modulation, conditioning/keyframe pathways, output projection and the VAE stay BF16. Tooling candidates: NVIDIA TensorRT Model Optimizer NVFP4 PTQ, torchao, or a custom `torch._scaled_mm`. UNVERIFIED: CogVideoX NVFP4 support and sm_120 FP4 kernels in PyTorch. Known risk: a community full-NVFP4 test on an I2V model (LTX-2.3) lost reference fidelity, and SparkVSR is I2V-derived. Acceptance gate: PSNR/LPIPS/DOVER/MUSIQ deltas vs BF16, the flicker metric, and a visual A/B on the TV. Tracked as INQUIRY-029 (kernel spike done, low priority: see `m3-benchmark.md`).
+
+## Measured ETA gate (INQUIRY-017)
+
+Hard gate at the end of M3: record the measured s/frame, the peak VRAM per 5080 and the film ETA in the roadmap. If the figure is unacceptable, scope gets revisited, and a selective or budget mode is a recipe change, not a rewrite. First figure recorded 2026-10-30 (about 6.9 s/frame, `m3-benchmark.md`), but it comes from a patched upstream script and quality is not assessed, so the gate stays open until the stage-major streamer is measured.
 
 ## Where each risk is tracked
 
-Blackwell INQUIRY-002; LXC idmap INQUIRY-003; upscale=1 and PiSA-SR keyframe INQUIRY-010; weights licences INQUIRY-011; glibc worker security ISSUE-012; weights staging MIN-013; frame/A-V drift MIN-014; PQ output INQUIRY-015; SVT-AV1 pin MIN-016; measured ETA INQUIRY-017; SSH teardown MIN-018; NVFP4 INQUIRY-029; API bind address ISSUE-028. No server-side upload size limit exists in code today (MIN-023), and segments are meant to fit under one.
+Blackwell INQUIRY-002 (complete: torch and SparkVSR run on both cards; LXC storage ISSUE-030 resolved; encrypted TrueNAS storage idea INQUIRY-031); LXC idmap INQUIRY-003 (complete, not needed); upscale=1 and PiSA-SR keyframe INQUIRY-010; weights licences INQUIRY-011; glibc worker security ISSUE-012; weights staging MIN-013; frame/A-V drift MIN-014; PQ output INQUIRY-015; SVT-AV1 pin MIN-016; measured ETA INQUIRY-017; VAE speed INQUIRY-032; PiSA-SR quality run INQUIRY-033; 1080p budget recipe IDEA-034; SSH teardown MIN-018; NVFP4 INQUIRY-029; API bind address ISSUE-028. No server-side upload size limit exists in code today (MIN-023), and segments are meant to fit under one.
