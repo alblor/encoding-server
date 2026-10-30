@@ -44,6 +44,24 @@ The encoding server runs on a minimal and efficient Docker container, making it 
 - **Comprehensive Job Management**: Full lifecycle control including graceful cancellation
 - **Redis-Based Queue**: Distributed job coordination with session state persistence
 
+## Restoration Pipeline (Under Development)
+
+**Status: planned. Nothing in this section exists in the code yet, there are no restoration endpoints, and the text will change as the milestones land.** The design is in [rules/restoration-design.md](rules/restoration-design.md) and the diary of what actually happened is in [HISTORY.md](HISTORY.md).
+
+The server started with my family's old videos, and the next thing I want from it is restoration: taking a movie (`.mkv` or `.mp4`) that comes from a low resolution source, cleaning it with a diffusion video restoration model (SparkVSR), upscaling it to 2160p and encoding it to 10-bit AV1, aiming at something visually lossless on a 60" 4K TV. It is a very different workload from a plain transcode though, since the restoration step needs a GPU with a lot of VRAM, hence it is planned as an additional feature on top of what is here and not as a rewrite of it.
+
+**NVIDIA GPUs as an optional compute device**: the target machine is a Proxmox server with two RTX 5080 cards, reached the same way as today, through Docker-in-LXC. Without a GPU the default stack keeps behaving exactly as it does now, and the GPU parts are meant to sit behind an opt-in Compose profile. A CPU-only path (classical upscaling, no SparkVSR) is planned too, so most of the application can be tested before any GPU is involved.
+
+**The recipe is the product**: instead of passing free-form FFmpeg strings, every restoration job will be described by a versioned JSON recipe, validated against a schema. It will say which restoration engine to use (SparkVSR, the classical CPU path, or none), the target resolution and frame rate, whether HDR10 is produced or preserved, the AV1 encoder settings, the encryption mode and what to do with audio and subtitles. The existing `/v1/jobs` whitelist stays as it is for the current job type. A probe tool is planned to look at each film and propose its recipe, so every title gets settings that fit it.
+
+**One job is one segment, not one film**: media only lives in RAM here, so a server restart loses whatever was in flight, while restoring a whole film is going to take days. For that reason a job will be a scene-aligned segment of roughly 30 to 60 seconds. A client script splits the film, encrypts every segment (encryption stays on by default, with an opt-out), submits it, downloads the AV1 result, verifies its checksum and keeps a manifest, that way an interrupted run resumes where it stopped and a crash costs at most the segments in flight. At the end the segments are joined with the original audio and subtitles.
+
+Please note a few things that are not settled yet:
+- The only throughput number I have is a community-reported benchmark on different hardware (an RTX 3090), which extrapolates to an upper bound of around 15 days for a 2 hour film at 2160p on two GPUs, and the real figure is going to be measured before I promise anything;
+- CUDA does not run on Alpine, so the worker will be a separate glibc image, and decrypted segments will cross a container boundary through tmpfs. That is a change to the security model of this project and it will be documented as such when it is built;
+- Model weights are public files and are the one thing that is not RAM-only, the guarantee covers the media;
+- HDR conversion is decided per film, and SparkVSR on sources that are already 2160p still has to be proven on a short clip.
+
 ## Quick Start
 
 ### Prerequisites
