@@ -38,7 +38,7 @@ Synthetic 3072 to 12288 linear layer, 16384 tokens, no real weights, torchao 0.1
 | FP8 dynamic W8A8 | yes | 3.7% | 7.16 ms | 1.47x |
 | NVFP4 (torchao `NVFP4InferenceConfig`) | yes | 22.8% (random data) | 12.41 ms | 0.85x, slower (not compiled, unfused) |
 
-Reported weight bytes were identical for all variants (tensor subclasses), so the memory saving is NOT measured. Since the transformer is only about 13% of the SparkVSR runtime, NVFP4 or FP8 gives at most a few percent end to end there. INQUIRY-029 is closed with this result (kernel numbers kept above); the question moved to the ReCaVSR transformer, where it matters for speed and memory: INQUIRY-038 (`recavsr-evaluation.md`). The real-weight quality gate is unchanged.
+Reported weight bytes were identical for all variants (tensor subclasses), so the memory saving is NOT measured. Since the transformer is only about 13% of the SparkVSR runtime, NVFP4 or FP8 gives at most a few percent end to end there. INQUIRY-029 is closed with this result (kernel numbers kept above); the question moved to the ReCaVSR transformer, where it matters for speed and memory: INQUIRY-038 (`recavsr-evaluation.md`), which closed on 2026-10-30 as measured (`restore-measurements.md`). The real-weight quality gate is unchanged.
 
 ## VAE speed spike (INQUIRY-032, closed 2026-10-30: the VAE is not fixable)
 

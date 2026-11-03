@@ -18,7 +18,7 @@ make docs                            # prints the /v1/docs access points
 make cleanup                         # down -v, prune, delete test results (destructive)
 ```
 
-API: `https://localhost:8443` (self-signed certificate, use `curl -k`). Health: `/health`. With the ISSUE-028 working-tree change (uncommitted) the port is published on loopback only; to reach it from another machine copy `.env.example` to `.env` and set `API_BIND_ADDR` and `ALLOWED_HOSTS` to the address clients use.
+API: `https://localhost:8443` (self-signed certificate, use `curl -k`). Health: `/health`. Since ISSUE-028 (commit 7c25bde) the port is published on loopback only; to reach it from another machine copy `.env.example` to `.env` and set `API_BIND_ADDR` and `ALLOWED_HOSTS` to the address clients use.
 
 ## Tests
 
@@ -49,9 +49,23 @@ The suite must stay at least this green. Do not trust the README's 96.2% figure,
 
 Same `make secure-*` flow inside the LXC. AppArmor may be better managed by the outer LXC. GPU passthrough is set up as of 2026-10-30 (five device nodes via `dev0`..`dev4`, no idmap needed, NVIDIA userspace 580.76.05 from the `.run` with `--no-kernel-modules`, `nvidia-container-toolkit` 1.20.1 with `no-cgroups=true`, Docker 28.4.0): measured facts and the resolved ISSUE-030 storage blocker are in `rules/m0-server-spikes.md`, SparkVSR benchmark numbers in `rules/m3-benchmark.md`. Note that sshd in the LXC is socket-activated, so disable both `ssh.socket` and `ssh.service` at teardown (MIN-018). The deploy guide `docs/DEPLOY_PROXMOX.md` is written at M6 from what actually worked (FEATURE-009).
 
+## Restoration feature (built 2026-10-30, uncommitted, QC pending)
+
+Server side (needs an NVIDIA host, the Docker-in-LXC from `m0-server-spikes.md`): `make gpu-build` builds the worker and API images, `make gpu-weights` stages the ReCaVSR weights, the YuNet face model and the YOLOX person model for head tracks once (SHA-256 checked, `scripts/stage_restore_weights.sh`, needs network; the workers have none), `make gpu-cache` creates the compile-cache bind directory (`mkdir -p`, `chown -R 10001:10001`, `chmod 0750`; `gpu-up` depends on it, BUG-115), `make gpu-up` starts the stack with both workers and shreds the host secrets, `make gpu-status` shows the containers and `/v1/restore/capabilities` (it reads `API_BIND_ADDR` from `.env`), `make gpu-logs`, `make gpu-down`, `make gpu-smoke` (GPU check inside the worker image). `make secure-down` passes `--profile cpu --profile gpu`, so the worker containers go down with the stack. `.env.example` now carries `COMPOSE_PROJECT_NAME`, `RESTORE_MODELS_DIR` and `RESTORE_CACHE_DIR`. The step-by-step deploy is `docs/DEPLOY_PROXMOX.md` (FEATURE-009).
+
+Client side (your machine, ffmpeg and ffprobe on PATH):
+
+```bash
+python client-tools/probe_media.py MOVIE [--samples 8] [--gpus 2] [--out report.json]   # classifies the film, proposes a recipe, ETA
+python client-tools/restore_film.py MOVIE --preset cleanup-4k --api-url https://HOST:8443 [--limit-segments N] [--parallel 3]
+python -m restore_worker.run_local --recipe R.json --segments DIR --out DIR   # worker inner loop by hand, on the GPU host, inside the worker image
+```
+
+Tests (reported by the owner's session on 2026-11-03, not re-run by the documenter): `make test-restore` runs the host set (budget, API, recipe, tiling, probe, client, secret lifecycle) with uv and no torch, 215 passed; `make test-restore-worker` builds the CPU worker image and runs the torch set (finish, hdr, pipeline, worker, quantize), 138 passed. The file lists are `RESTORE_HOST_TESTS` and `RESTORE_WORKER_TESTS` in the Makefile.
+
 ## Upgrades and CVE hygiene
 
 - Re-check pins in `api/requirements.txt` and the `alpine:3.19` / `redis:7-alpine` bases at every milestone; Alpine 3.19 is aging, plan a base bump.
 - Run `pip list --outdated` inside the build context and review security advisories before bumping `fastapi`, `cryptography`, `pyjwt`, `python-multipart`, `pyOpenSSL`.
 - After any bump: `make secure-build && make secure-up && make test-all`.
-- The new worker image will pin torch (cu128+) and SVT-AV1 explicitly (MIN-016); record each pin in this file when it lands.
+- Worker image pins (2026-10-30): static ffmpeg n8.1.3 with SVT-AV1 4.2.0, checked by SHA-256 against the published list (MIN-016); ReCaVSR at commit `b98b1f2e` with its `uv.lock`, torch 2.10 and CUDA 13 (MIN-043); weights revision and SHA-256 in `scripts/stage_restore_weights.sh`; torchao 0.16.0 only in the FP8 spike image (`tools/scripts/ops/bench/Dockerfile.recavsr-fp8`). Bump each on purpose, re-run the tiled bench (`recavsr_tiled_bench.py`) and note the change here.

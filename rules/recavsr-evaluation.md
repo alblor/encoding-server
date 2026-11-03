@@ -23,7 +23,7 @@ Demo clip 488x830 at 24 fps, output scale 2 (976x1660, 1.62 Mpx), 31, 49, 121 an
 - Steady state about 0.08 to 0.09 s/frame at 1.62 Mpx (about 11 FPS), taken from 31 versus 121 frames and the 336-frame model loop.
 - Host RAM peak about 5.5 GB for 336 frames.
 
-ESTIMATE, not measured: scaling by area to 2160p (5.1x) gives about 0.4 to 0.6 s/frame, so about 12 to 14 h per 2 h film on two GPUs, roughly 10 to 15x faster than SparkVSR. 2160p needs spatial tiling (tiles of about 1.6 Mpx) or a smaller weight footprint. Here the transformer, not a VAE, dominates, so FP8 would free about 5 GB of the 10.6 GB transformer and quantization finally matters for speed and memory (INQUIRY-038).
+ESTIMATE, not measured: scaling by area to 2160p (5.1x) gives about 0.4 to 0.6 s/frame, so about 12 to 14 h per 2 h film on two GPUs, roughly 10 to 15x faster than SparkVSR. 2160p needs spatial tiling (tiles of about 1.6 Mpx) or a smaller weight footprint. Here the transformer, not a VAE, dominates, so FP8 would free about 5 GB of the 10.6 GB transformer and quantization finally matters for speed and memory (INQUIRY-038). UPDATE 2026-10-30 (evening): measured at 2160p with the tiled engine, 0.573 s/frame warm on one GPU (inside the estimate), 0.82 s/frame end to end on real footage; FP8 turned out transparent but not faster (INQUIRY-038 closed): `restore-measurements.md`.
 
 ## First quality comparison (one clip, so a first impression and not a verdict)
 
