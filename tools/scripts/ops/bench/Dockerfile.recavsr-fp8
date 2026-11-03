@@ -1,0 +1,6 @@
+# ReCaVSR evaluation image plus torchao for the FP8 spike. Pinned to 0.16.0, the release built for torch 2.10;
+# newer ones need a newer torch and older ones skip their C++ extensions. Its Hopper and datacenter-Blackwell
+# extensions fail to load on this consumer card, which is expected: the FP8 path used here is Python plus
+# torch._scaled_mm. Build after Dockerfile.recavsr-bench: docker build -t recavsr-fp8 -f Dockerfile.recavsr-fp8 .
+FROM recavsr-bench
+RUN uv pip install --python /opt/recavsr/.venv/bin/python --no-deps torchao==0.16.0
