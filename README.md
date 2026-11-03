@@ -46,13 +46,13 @@ The encoding server runs on a minimal and efficient Docker container, making it 
 
 ## Restoration Pipeline (Under Development)
 
-**Status: planned. Nothing in this section exists in the code yet, there are no restoration endpoints, and the text will change as the milestones land.** The design is in [rules/restoration-design.md](rules/restoration-design.md) and the diary of what actually happened is in [HISTORY.md](HISTORY.md).
+**Status: under development. The API side now exists on the `feature/restoration-pipeline` branch (the `/v1/restore` endpoints, described in [Restoration API](#restoration-api) below), while the rest of this section still describes what is planned, and the text will change as the milestones land.** The design is in [rules/restoration-design.md](rules/restoration-design.md) and the diary of what actually happened is in [HISTORY.md](HISTORY.md).
 
 The server started with my family's old videos, and the next thing I want from it is restoration: taking a movie (`.mkv` or `.mp4`) that comes from a low resolution source, cleaning it with a diffusion video restoration model (SparkVSR), upscaling it to 2160p and encoding it to 10-bit AV1, aiming at something visually lossless on a 60" 4K TV. It is a very different workload from a plain transcode though, since the restoration step needs a GPU with a lot of VRAM, hence it is planned as an additional feature on top of what is here and not as a rewrite of it.
 
 **NVIDIA GPUs as an optional compute device**: the target machine is a Proxmox server with two RTX 5080 cards, reached the same way as today, through Docker-in-LXC. Without a GPU the default stack keeps behaving exactly as it does now, and the GPU parts are meant to sit behind an opt-in Compose profile. A CPU-only path (classical upscaling, no SparkVSR) is planned too, so most of the application can be tested before any GPU is involved.
 
-**The recipe is the product**: instead of passing free-form FFmpeg strings, every restoration job will be described by a versioned JSON recipe, validated against a schema. It will say which restoration engine to use (SparkVSR, the classical CPU path, or none), the target resolution and frame rate, whether HDR10 is produced or preserved, the AV1 encoder settings, the encryption mode and what to do with audio and subtitles. The existing `/v1/jobs` whitelist stays as it is for the current job type. A probe tool is planned to look at each film and propose its recipe, so every title gets settings that fit it.
+**The recipe is the product**: instead of passing free-form FFmpeg strings, every restoration job will be described by a versioned JSON recipe, validated against a schema. It will say which restoration engine to use (SparkVSR, the classical CPU path, or none), the target resolution and frame rate, whether HDR10 is produced, the AV1 encoder settings, the encryption mode and what to do with audio and subtitles. The existing `/v1/jobs` whitelist stays as it is for the current job type. A probe tool is planned to look at each film and propose its recipe, so every title gets settings that fit it.
 
 **One job is one segment, not one film**: media only lives in RAM here, so a server restart loses whatever was in flight, while restoring a whole film is going to take days. For that reason a job will be a scene-aligned segment of roughly 30 to 60 seconds. A client script splits the film, encrypts every segment (encryption stays on by default, with an opt-out), submits it, downloads the AV1 result, verifies its checksum and keeps a manifest, that way an interrupted run resumes where it stopped and a crash costs at most the segments in flight. At the end the segments are joined with the original audio and subtitles.
 
@@ -145,6 +145,47 @@ curl -X POST https://localhost:8443/v1/jobs \
 # Batch processing entire directories
 python client-tools/batch_encrypt.py /path/to/media/folder
 ```
+
+## Restoration API
+
+The restoration endpoints live under `/v1/restore` and sit next to the existing `/v1/jobs`, which stays as it is. I kept them separate because a restoration job is a very different thing from a transcode: it is one segment of a film (a few seconds of picture, cut by the client on a scene change), it runs on a GPU worker that is not this container, and the recipe that describes it is validated against a schema instead of being a list of FFmpeg parameters. The contract between the API and the worker is in [rules/restore-job-protocol.md](rules/restore-job-protocol.md).
+
+| Endpoint | What it does |
+|---|---|
+| `GET /v1/restore/presets` | Lists the presets, each with the full recipe it resolves to |
+| `POST /v1/restore/recipe/resolve` | Validates a recipe and returns the effective one, nothing is queued |
+| `POST /v1/restore/jobs` | Uploads one segment (`file`, `recipe`, `first_frame`, `segment_index`, `decryption_password` for manual mode) and queues it |
+| `GET /v1/restore/jobs/{id}` | Status, stage, progress, error, and the size of the result when it is done |
+| `GET /v1/restore/jobs/{id}/download` | The result, encrypted as the job's mode says, only when the status is `done` |
+| `POST /v1/restore/jobs/{id}/cancel` | Stops a queued or running job |
+| `DELETE /v1/restore/jobs/{id}` | Overwrites and deletes the job's files, and removes its keys |
+| `GET /v1/restore/capabilities` | Engines the running workers offer, queue length, workers seen in the last minute |
+
+```bash
+# See what is running before sending anything: with no worker alive the job just waits in the queue
+curl -k https://localhost:8443/v1/restore/capabilities
+
+# Submit one segment with a preset
+curl -k -X POST https://localhost:8443/v1/restore/jobs \
+  -F "file=@segment_0007.mkv" \
+  -F 'recipe={"preset":"film-restoration"}' \
+  -F "first_frame=1680" -F "segment_index=7"
+
+# Poll, download, then delete
+curl -k https://localhost:8443/v1/restore/jobs/{job_id}
+curl -k -o restored.mkv https://localhost:8443/v1/restore/jobs/{job_id}/download
+curl -k -X DELETE https://localhost:8443/v1/restore/jobs/{job_id}
+```
+
+**The recipe has three layers**: a preset (what most people pick), a short basic block (engine, target height, quality, HDR, grain, encryption, audio and subtitles) and an advanced block for troubleshooting and tuning (tile size and overlap, precision, prefilter, bit depth, grain, HDR levels, encoder settings). A request with only a preset, or only the basic block, is valid, every advanced field has a default, and unknown keys are rejected so a typo never falls back to a default silently. The response always carries the effective recipe, that way a run can be reproduced. Every field is documented in `/v1/docs/endpoints/restore_resolve`, generated from the schema in `restore_core/recipe.py`, including which advanced fields can cost quality or speed.
+
+**Encryption**: the mode comes from `basic.encryption` in the recipe. `automated` and `manual` mean what they mean for `/v1/jobs` (in manual mode the segment is encrypted with `encrypt_media.py`, the password goes in `decryption_password`, and the download comes back encrypted with that same password). `off` skips the crypto layer only, since the media still lives in RAM only and is wiped on delete. In every mode the worker sees plain video and never a key, which is a change to the security model of this project and is described in [rules/restoration-design.md](rules/restoration-design.md). The password of a manual job is kept wrapped by the server key until the job is deleted, because the result is encrypted at download time, possibly hours after the upload.
+
+**What the API checks on an upload**: the recipe, the size (`RESTORE_MAX_SEGMENT_MB`, 2048 by default, checked on `Content-Length` before the body is read and again while it is copied), and the content with `ffprobe`, which has to find Matroska or MP4 with exactly one video stream, at most `RESTORE_MAX_SEGMENT_FRAMES` frames (400) and `RESTORE_MAX_PIXELS` per frame (3840x2304). The file name you send is ignored, the segment is always stored as `in.mkv` in its own directory, and anything rejected is wiped.
+
+**Jobs are yours**: a job id is 32 random hex characters, and if you send an `X-API-Key` header the job is kept per key, another key gets a plain 404 for it (never 403). There is no authentication on `/v1/jobs` today and there is none here either, so without the header every caller is the same "anonymous" one and the id is the only thing protecting a job.
+
+Please note that the endpoints need the shared RAM volume `/restore-work` mounted in the API container and a worker group `restore` (gid 10001, set `RESTORE_WORKER_GID` if yours differs), that every engine has its own Redis queue (`restore:queue:recavsr`, `restore:queue:classical`, `restore:queue:none`) so a CPU worker never takes a GPU job, that finished jobs and their files are wiped 24 hours after they end by a cleanup task in the API (a running job whose worker has been silent for 15 minutes is failed first, and a job that waits 24 hours in the queue expires), and that the GPU worker and the client tools that cut and submit a whole film are built separately, so they are not described here, and I am probably forgetting some edge cases between the two.
 
 ## Frontend Integration
 
