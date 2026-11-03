@@ -138,3 +138,12 @@ SIMPLE_LXC_DEPLOYMENT.md
 tests/data/media/
 tests/results/
 tests/integration/results/
+# Local secrets and scratch (tools/ convention): never committed
+.secrets/
+tools/sandbox/
+
+# More media containers (test data only, never commit actual media)
+*.m2ts
+*.mxf
+*.webm
+*.restore-work/
