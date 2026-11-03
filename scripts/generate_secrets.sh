@@ -22,8 +22,8 @@ PROJECT_ROOT="$( dirname "$SCRIPT_DIR" )"
 FULL_SECRETS_PATH="$PROJECT_ROOT/$SECRETS_DIR"
 
 # Secret definitions
-SECRET_NAMES=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key")
-SECRET_DESCRIPTIONS=("JWT signing secret (32 bytes base64)" "Master key for encrypting job keys (32 bytes base64)" "Redis authentication password (24 bytes base64)" "Master key for API key generation (32 bytes base64)")
+SECRET_NAMES=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key" "restore_worker_redis_password")
+SECRET_DESCRIPTIONS=("JWT signing secret (32 bytes base64)" "Master key for encrypting job keys (32 bytes base64)" "Redis authentication password (24 bytes base64)" "Master key for API key generation (32 bytes base64)" "Redis password of the restoration workers, who get a Redis user limited to restore:* (24 bytes base64)")
 
 # Function to print colored output
 print_color() {
@@ -94,8 +94,7 @@ generate_secret() {
     
     # Verify the secret was generated correctly
     if [[ -f "$secret_file" ]] && [[ -s "$secret_file" ]]; then
-        local secret_preview=$(head -c 8 "$secret_file")
-        print_color $GREEN "✅ Generated $secret_name (preview: ${secret_preview}...)"
+        print_color $GREEN "✅ Generated $secret_name ($(wc -c < "$secret_file" | tr -d ' ') characters)"
     else
         print_color $RED "❌ Failed to generate $secret_name"
         exit 1
@@ -111,6 +110,7 @@ generate_all_secrets() {
     generate_secret "encryption_master_key" "Master encryption key" 32
     generate_secret "redis_password" "Redis password" 24
     generate_secret "api_master_key" "API master key" 32
+    generate_secret "restore_worker_redis_password" "Restoration worker Redis password" 24
     
     print_color $GREEN "🎉 All secrets generated successfully!"
 }

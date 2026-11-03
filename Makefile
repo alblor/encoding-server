@@ -1,7 +1,7 @@
 # Secure Media Encoding Server - Enhanced Makefile Command Panel
 # Author: Lorenzo Albanese (alblor)
 
-.PHONY: help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell cert-upload cert-status secure-up-shred secure-down-restore secret-shred secret-restore secret-status
+.PHONY: test-restore test-restore-worker gpu-build gpu-weights gpu-up gpu-down gpu-logs gpu-smoke gpu-status help build up down cleanup docs test test-quick test-unit test-encryption test-manual test-automated test-api test-docs test-prepare test-all logs shell client-shell secure-build secure-up secure-down secure-logs secure-shell cert-upload cert-status secure-up-shred secure-down-restore secret-shred secret-restore secret-status
 
 # Default target
 help:
@@ -91,7 +91,7 @@ secure-down:
 		echo "ℹ️  Secrets already on disk, no restoration needed"; \
 	fi
 	@echo "🔽 Phase 2: Stopping secure environment..."
-	docker compose -f docker-compose.secure.yml down
+	docker compose -f docker-compose.secure.yml --profile cpu --profile gpu down        # profiles too: a worker left behind keeps the network busy
 	@echo ""
 	@echo "✅ INTELLIGENT SHUTDOWN COMPLETE:"
 	@echo "  📥 Secrets safely preserved on host filesystem"
@@ -159,8 +159,22 @@ test-prepare:
 
 # Unit tests (existing 17 tests) - SECURE ENVIRONMENT PRIMARY
 test-unit:
-	@echo "🧪 Running Unit Tests (17 tests) in Secure Environment..."
-	docker compose -f docker-compose.secure.yml exec secure-encoding-api python -m pytest /app/tests/unit/ -v
+	@echo "🧪 Running Unit Tests in Secure Environment..."
+	docker compose -f docker-compose.secure.yml exec -u 1000 secure-encoding-api python -m pytest /app/tests/unit/test_basic_functionality.py -v
+
+# Restoration feature tests. The API image has no torch or numpy, so they run elsewhere: the host-side set needs
+# only uv, the worker-side set runs inside the CPU worker image (torch, numpy, ffmpeg with SVT-AV1).
+RESTORE_HOST_TESTS = tests/unit/test_restore_budget.py tests/unit/test_restore_api.py tests/unit/test_restore_recipe.py tests/unit/test_restore_tiling.py tests/unit/test_probe_media.py tests/unit/test_restore_client.py tests/unit/test_secret_lifecycle.py
+RESTORE_WORKER_TESTS = tests/unit/test_restore_finish.py tests/unit/test_restore_hdr.py tests/unit/test_restore_pipeline.py tests/unit/test_restore_worker.py tests/unit/test_restore_quantize.py
+
+test-restore:
+	@echo "🎞️  Restoration tests on the host (no torch)..."
+	PYTHONPATH=$(CURDIR):$(CURDIR)/api uv run --python 3.11 --with 'pytest<8' --with pytest-asyncio==0.21.1 --with 'pydantic>=2.5' --with numpy --with pillow --with requests --with cryptography --with fastapi==0.104.1 --with httpx==0.25.2 --with python-multipart==0.0.6 --with redis==5.0.1 --with pyjwt --with passlib --with 'starlette<0.28' --with pydantic-settings python -m pytest $(RESTORE_HOST_TESTS) -q
+
+test-restore-worker:
+	@echo "🎞️  Restoration worker tests inside the CPU worker image..."
+	docker build -q -f restore-worker/Dockerfile.cpu -t encoding-restore-worker-cpu .
+	docker run --rm --entrypoint sh -v $(CURDIR):/repo:ro -e PYTHONPATH=/repo encoding-restore-worker-cpu -c "pip install -q 'pytest<8' && cd /repo && python -m pytest -p no:cacheprovider $(RESTORE_WORKER_TESTS) -q"
 
 # Fast encryption/decryption stub testing
 test-encryption:
@@ -338,3 +352,45 @@ cert-upload:
 	@echo ""
 	@echo "🎉 Persistent enterprise certificate deployment completed!"
 	@echo "🔄 Certificate will automatically load on future container restarts"
+
+# --- Optional restoration feature (NVIDIA GPUs) --------------------------------------------------------------------
+# The default stack is untouched. These targets add the restore workers (compose profile `gpu`), one per GPU.
+# Same secret lifecycle as secure-up: the workers start together with the API so they can read the Redis secret
+# before the host copies are shredded, and are restarted through these targets, never on their own.
+
+gpu-build:
+	@echo "Building the restore worker image (glibc, CUDA, pinned ffmpeg and ReCaVSR)..."
+	docker compose -f docker-compose.secure.yml --profile gpu build restore-worker-gpu0 secure-encoding-api
+
+gpu-weights:
+	@./scripts/stage_restore_weights.sh
+
+# The compile cache is bind-mounted into workers that run as uid 10001. Docker would create a missing source as root:root and the
+# first job would fail with a permission error, so the directory is made here and handed to 10001 (run as root, as in the LXC).
+gpu-cache:
+	@d="$$(sed -n 's/^RESTORE_CACHE_DIR=//p' .env 2>/dev/null | tail -1)"; d="$${d:-$${RESTORE_CACHE_DIR:-/srv/cache/restore}}"; \
+	mkdir -p "$$d" && chown -R 10001:10001 "$$d" && chmod 0750 "$$d" && echo "compile cache ready: $$d" \
+	  || { echo "could not prepare $$d for uid 10001: run make gpu-up as root, or create it yourself with that owner"; exit 1; }
+
+gpu-up: gpu-build gpu-cache
+	@echo "Starting the secure stack with GPU workers..."
+	docker compose -f docker-compose.secure.yml --profile gpu up -d
+	@sleep 5
+	@./scripts/secure_secret_lifecycle.sh shred
+	@echo "API on API_BIND_ADDR (default loopback, see .env.example); workers: make gpu-status"
+
+gpu-down:
+	@if ./scripts/secure_secret_lifecycle.sh status | grep -q "MAXIMUM (memory-only)"; then ./scripts/secure_secret_lifecycle.sh restore; fi
+	docker compose -f docker-compose.secure.yml --profile gpu down
+
+gpu-logs:
+	docker compose -f docker-compose.secure.yml --profile gpu logs -f restore-worker-gpu0 restore-worker-gpu1
+
+gpu-status:
+	@docker compose -f docker-compose.secure.yml --profile gpu ps
+	@a="$$(sed -n 's/^API_BIND_ADDR=//p' .env 2>/dev/null | tail -1)"; a="$${a:-$${API_BIND_ADDR:-127.0.0.1}}"; \
+	curl -sk "https://$$a:8443/v1/restore/capabilities" | python3 -m json.tool 2>/dev/null || echo "API not reachable on $$a:8443"
+
+gpu-smoke:
+	docker run --rm -i --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+	  --entrypoint /opt/recavsr/.venv/bin/python encoding-restore-worker - < tools/scripts/ops/gpu_smoke_test.py

@@ -22,6 +22,7 @@ services:
     volumes:
       - ./certificates/enterprise:/opt/enterprise-certs:ro,consistent
       - ./secrets:/secrets:ro,consistent  # Fallback for Docker-in-LXC environments
+      - restore-work:/restore-work         # Optional restoration feature: RAM-backed hand-over to the GPU workers
     
     # SECURITY: Docker secrets integration for sensitive configuration
     secrets:
@@ -29,6 +30,9 @@ services:
       - encryption_master_key
       - redis_password
       - api_master_key
+      # The API never reads this one. It is mounted so that `make secure-down` can copy every secret back from this
+      # container after the host copies were shredded: without it the worker password would stay a shred marker.
+      - restore_worker_redis_password
     
     # SECURITY: Memory limits and protection (CPU managed by Proxmox)
     deploy:
@@ -82,6 +86,10 @@ services:
       - ENABLE_HTTPS_REDIRECT=false      # HTTP to HTTPS redirect (disabled for development)
       - SECCOMP_PROFILE=api-server-refined  # Refined Seccomp syscall filtering profile
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}  # Add the address clients use, via .env
+      - RESTORE_WORK_DIR=/restore-work
+      - RESTORE_GPU_WORKER_MEMORY_MB=${RESTORE_GPU_WORKER_MEMORY_MB:-22528}   # keep equal to the mem_limit of the restore workers
+      - RESTORE_CPU_WORKER_MEMORY_MB=${RESTORE_CPU_WORKER_MEMORY_MB:-12288}
+      - RESTORE_WORKER_GID=10001
     
     # SECURITY: Process isolation
     pid: "host"
@@ -130,6 +138,7 @@ services:
     # SECURITY: Docker secrets for Redis authentication
     secrets:
       - redis_password
+      - restore_worker_redis_password
     
     # SECURITY: Container hardening
     security_opt:
@@ -153,6 +162,7 @@ services:
     
     networks:
       - secure-encoding-net
+      - restore-net
     
     # SECURITY: No external exposure
     expose:
@@ -191,6 +201,136 @@ services:
     profiles:
       - testing
 
+  # Restoration workers: optional, started with `--profile gpu` (or `make gpu-up`). One process per GPU.
+  # glibc image because CUDA does not run on musl. They share one definition and differ in GPU and name.
+  restore-worker-gpu0: &restore-worker
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: restore-worker/Dockerfile.gpu
+    image: encoding-restore-worker
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - WORKER_NAME=gpu0
+      - WORKER_DEVICE=cuda:0
+      - WORKER_ENGINES=recavsr,classical,none
+      - REDIS_HOST=redis-secure
+      - REDIS_PORT=6379
+      - MODEL_DIR=/m
+      - RESTORE_PRECISION=${RESTORE_PRECISION:-bf16}   # bf16 (reference) or fp8 (about 1.4x faster transformer, 46.8 dB against bf16)
+      - RESTORE_WORK_DIR=/restore-work
+      - HOME=/tmp
+      # Compile caches are not media: they live on disk so a restart does not pay the 100 s torch.compile again.
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+    volumes:
+      - restore-work:/restore-work
+      - ${RESTORE_MODELS_DIR:-/srv/models/recavsr}:/m:ro       # weights, public artifacts, read-only
+      - ${RESTORE_CACHE_DIR:-/srv/cache/restore}:/cache
+      # Fallback path for the Redis secret in Docker-in-LXC, as for the API, but ONLY that one file: the worker must
+      # never be able to read the encryption, JWT or API keys. create_host_path false: never invent a directory.
+      - type: bind
+        source: ./secrets/restore_worker_redis_password
+        target: /secrets/restore_worker_redis_password
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - restore_worker_redis_password
+    # SECURITY: no network but the internal one to Redis; read-only root; nothing kept after the entrypoint drops privileges.
+    # /tmp keeps exec rights on purpose: Triton compiles a small launcher there on first use.
+    networks:
+      - restore-net
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - SETPCAP            # lets setpriv empty the bounding set before Python starts
+    ipc: "none"
+    pids_limit: 1024
+    mem_limit: 22g
+    memswap_limit: 22g
+    mem_swappiness: 0
+    restart: "no"          # secrets are shredded from the host after start-up, so a worker that exits stays down until
+                           # `make gpu-down && make gpu-up` (the API then reports no worker as available)
+    depends_on:
+      - redis-secure
+
+  restore-worker-gpu1:
+    <<: *restore-worker
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=1
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - WORKER_NAME=gpu1
+      - WORKER_DEVICE=cuda:0           # inside the container the only visible GPU is always cuda:0
+      - WORKER_ENGINES=recavsr,classical,none
+      - REDIS_HOST=redis-secure
+      - REDIS_PORT=6379
+      - MODEL_DIR=/m
+      - RESTORE_PRECISION=${RESTORE_PRECISION:-bf16}
+      - RESTORE_WORK_DIR=/restore-work
+      - HOME=/tmp
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+
+  # The same worker without a GPU: the `classical` and `none` engines and the whole finishing and encode chain on the CPU.
+  # Profile `cpu`. This is how the feature runs, and is tested, on a machine with no NVIDIA card.
+  restore-worker-cpu:
+    profiles: ["cpu"]
+    build:
+      context: .
+      dockerfile: restore-worker/Dockerfile.cpu
+    image: encoding-restore-worker-cpu
+    environment:
+      - WORKER_NAME=cpu0
+      - WORKER_DEVICE=cpu
+      - WORKER_ENGINES=classical,none
+      - REDIS_HOST=redis-secure
+      - REDIS_PORT=6379
+      - RESTORE_WORK_DIR=/restore-work
+      - HOME=/tmp
+    volumes:
+      - restore-work:/restore-work
+      - type: bind
+        source: ./secrets/restore_worker_redis_password
+        target: /secrets/restore_worker_redis_password
+        read_only: true
+        bind:
+          create_host_path: false
+    secrets:
+      - restore_worker_redis_password
+    networks:
+      - restore-net
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - SETPCAP
+    ipc: "none"
+    pids_limit: 512
+    mem_limit: 12g
+    memswap_limit: 12g
+    mem_swappiness: 0
+    restart: "no"
+    depends_on:
+      - redis-secure
+
 # SECURITY: Network configuration
 # - Published ports bind to API_BIND_ADDR (default 127.0.0.1); host_binding_ipv4 below only sets the
 #   fallback for a port published without an address, and is loopback as well
@@ -209,8 +349,20 @@ networks:
       com.docker.network.bridge.enable_ip_masquerade: "false"
       com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 
-# SECURITY: No named volumes - everything in tmpfs
-volumes: {}
+  # Restoration workers live here with Redis and nothing else: internal means no route to the outside at all.
+  restore-net:
+    driver: bridge
+    internal: true
+
+# SECURITY: everything that holds media is RAM. The one named volume is a tmpfs: it carries only the compressed
+# segments (megabytes each) between the API and the workers, mode 0770 for the shared `restore` group (gid 10001).
+volumes:
+  restore-work:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=${RESTORE_WORK_SIZE:-8g},mode=0770,uid=1000,gid=10001,noexec,nosuid,nodev"
 
 # SECURITY: Docker secrets for sensitive configuration
 # Secrets are mounted read-only at /run/secrets/ inside containers
@@ -223,3 +375,5 @@ secrets:
     file: ./secrets/redis_password
   api_master_key:
     file: ./secrets/api_master_key
+  restore_worker_redis_password:
+    file: ./secrets/restore_worker_redis_password
