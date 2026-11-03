@@ -1,0 +1,55 @@
+# Restoration worker: the GPU side of the optional restoration pipeline.
+#
+# glibc, not Alpine: CUDA wheels do not run on musl. Built from the repository root:
+#   docker build -f restore-worker/Dockerfile.gpu -t encoding-restore-worker .
+#
+# What is pinned and why
+#  - ffmpeg: a dated static build whose SVT-AV1 is 4.x. Debian's packaged ffmpeg ships an SVT-AV1 that predates
+#    the variance boost and tune options the recipe uses. The archive is verified against the release's
+#    published SHA-256 list before it is unpacked.
+#  - ReCaVSR: the exact commit that was evaluated, with its own uv.lock (torch 2.10 / CUDA 13). Weights are NOT in
+#    the image: they are mounted read-only at run time, and the container has no network.
+FROM python:3.13-slim-bookworm
+
+ARG FFMPEG_TAG=autobuild-2026-10-30-13-01
+ARG FFMPEG_ASSET=ffmpeg-n8.1.3-27-g8dca1586f4-linux64-gpl-8.1.tar.xz
+ARG RECAVSR_COMMIT=b98b1f2ec7fc550aed99fd7ec45a5e4b757e4306
+
+# gcc and the Python headers: Triton compiles a small C launcher on first use.
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      git curl ca-certificates xz-utils build-essential python3-dev \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip install --no-cache-dir uv
+
+RUN cd /tmp \
+ && curl -fsSL -o checksums.sha256 "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/checksums.sha256" \
+ && curl -fsSL -o "${FFMPEG_ASSET}" "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" \
+ && grep " ${FFMPEG_ASSET}\$" checksums.sha256 | sha256sum -c - \
+ && tar -xJf "${FFMPEG_ASSET}" --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' \
+ && rm -f /tmp/checksums.sha256 "/tmp/${FFMPEG_ASSET}" \
+ && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libsvtav1
+
+WORKDIR /opt/recavsr
+RUN git clone https://github.com/kopperx/ReCaVSR.git . \
+ && git checkout "${RECAVSR_COMMIT}" \
+ && uv sync --locked \
+ && uv pip install --python .venv/bin/python "pydantic>=2.9,<3" "redis>=5,<6"
+
+COPY restore_core /app/restore_core
+COPY restore_worker /app/restore_worker
+
+# The worker runs unprivileged: the entrypoint starts as root only to move the Redis secret into RAM, then drops
+# every privilege (see entrypoint.sh). gid 10001 is the shared `restore` group of the work volume.
+RUN groupadd --gid 10001 restore \
+ && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin worker
+COPY restore-worker/entrypoint.sh /entrypoint.sh
+RUN chmod 0555 /entrypoint.sh
+
+ENV PYTHONPATH=/app:/opt/recavsr \
+    PYTHONUNBUFFERED=1 \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+WORKDIR /app
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/opt/recavsr/.venv/bin/python", "-m", "restore_worker.worker"]

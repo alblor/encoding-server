@@ -1,0 +1,43 @@
+# Restoration worker without a GPU: the `classical` and `none` engines, the finishing stage (deband, grain, HDR mapping)
+# and the encode, on the CPU. Same code, same protocol, same hardening as the GPU worker, with a far smaller image.
+# It is how the whole feature is tested and run on a machine without an NVIDIA card.
+#
+#   docker build -f restore-worker/Dockerfile.cpu -t encoding-restore-worker-cpu .
+FROM python:3.13-slim-bookworm
+
+ARG TARGETARCH
+ARG FFMPEG_TAG=autobuild-2026-10-30-13-01
+ARG FFMPEG_BUILD=n8.1.3-27-g8dca1586f4
+
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# Same pinned, checksum-verified static ffmpeg as the GPU image: SVT-AV1 4.x. The asset follows the build platform, so the
+# CPU image also builds on Apple Silicon (linuxarm64), which is how the feature is tested on a laptop.
+RUN case "${TARGETARCH:-amd64}" in amd64) PLATFORM=linux64 ;; arm64) PLATFORM=linuxarm64 ;; *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; esac \
+ && FFMPEG_ASSET="ffmpeg-${FFMPEG_BUILD}-${PLATFORM}-gpl-8.1.tar.xz" \
+ && cd /tmp \
+ && curl -fsSL -o checksums.sha256 "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/checksums.sha256" \
+ && curl -fsSL -o "${FFMPEG_ASSET}" "https://github.com/BtbN/FFmpeg-Builds/releases/download/${FFMPEG_TAG}/${FFMPEG_ASSET}" \
+ && grep " ${FFMPEG_ASSET}\$" checksums.sha256 | sha256sum -c - \
+ && tar -xJf "${FFMPEG_ASSET}" --strip-components=2 -C /usr/local/bin --wildcards '*/bin/ffmpeg' '*/bin/ffprobe' \
+ && rm -f /tmp/checksums.sha256 "/tmp/${FFMPEG_ASSET}" \
+ && ffmpeg -hide_banner -encoders 2>/dev/null | grep -q libsvtav1
+
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch \
+ && pip install --no-cache-dir numpy opencv-python-headless "pydantic>=2.9,<3" "redis>=5,<6"
+
+COPY restore_core /app/restore_core
+COPY restore_worker/__init__.py restore_worker/faces.py restore_worker/face_zoom.py restore_worker/heads.py restore_worker/finish.py restore_worker/hdr.py restore_worker/pipeline.py restore_worker/worker.py /app/restore_worker/
+
+RUN groupadd --gid 10001 restore \
+ && useradd --system --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin worker \
+ && apt-get update && apt-get install -y --no-install-recommends util-linux && rm -rf /var/lib/apt/lists/*
+COPY restore-worker/entrypoint.sh /entrypoint.sh
+RUN chmod 0555 /entrypoint.sh
+
+ENV PYTHONPATH=/app PYTHONUNBUFFERED=1 WORKER_DEVICE=cpu WORKER_ENGINES=classical,none
+WORKDIR /app
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python", "-m", "restore_worker.worker"]
