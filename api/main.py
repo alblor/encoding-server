@@ -22,6 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 import json
 import io
 
@@ -67,6 +69,10 @@ from app.secure_jobs import SecureJobProcessor
 from app.encryption import EncryptionManager
 from app.documentation import DocumentationManager
 from app.tls_config import tls_manager
+from app.restore.config import RestoreConfig
+from app.restore.router import restore_validation_handler, router as restore_router
+from app.restore.service import RestoreService, run_cleanup_loop
+from app.restore.store import RestoreStore
 
 
 @asynccontextmanager
@@ -119,6 +125,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.documentation_manager = DocumentationManager()
             logger.info("✅ DocumentationManager initialized")
             
+            # Restoration API: its own client with decoded strings (the shared one returns bytes)
+            restore_redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            app.state.restore_service = RestoreService(
+                RestoreStore(restore_redis),
+                RestoreConfig.from_settings(settings),
+                app.state.encryption_manager,
+            )
+            app.state.restore_cleanup_task = asyncio.create_task(run_cleanup_loop(app.state.restore_service))
+            logger.info("✅ Restoration service initialized")
+            
         except Exception as e:
             logger.error(f"❌ Service initialization failed: {e}")
             raise RuntimeError(f"Component initialization failed: {e}")
@@ -135,6 +151,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     finally:
         logger.info("🧹 Shutting down with secure cleanup")
+        cleanup_task = getattr(app.state, "restore_cleanup_task", None)
+        if cleanup_task is not None:
+            cleanup_task.cancel()
         # Secure cleanup will be handled by SecureMemoryManager
 
 
@@ -142,7 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Ultra-Secure Media Encoding Server",
     description="Zero-trust media encoding with encrypted virtual memory",
-    version="2.0.0-secure",
+    version="2.1.0-secure",
     lifespan=lifespan,
     docs_url="/api/docs" if settings.DEBUG else None,  # Disable docs in production
     redoc_url="/api/redoc" if settings.DEBUG else None
@@ -150,6 +169,9 @@ app = FastAPI(
 
 # Security middleware configuration - HTTPS-ONLY MODE
 HTTPS_ONLY_MODE = True  # Always true in production - no HTTP support
+
+# Restoration endpoints (/v1/restore/*)
+app.include_router(restore_router)
 
 # Add trusted host middleware for production security (allow testserver for unit tests)
 app.add_middleware(
@@ -199,6 +221,14 @@ if settings.DEBUG:
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Restoration routes use the project's error shape, the other routes keep FastAPI's default."""
+    if request.url.path.startswith("/v1/restore"):
+        return await restore_validation_handler(request, exc)
+    return await request_validation_exception_handler(request, exc)
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler with secure error responses."""
@@ -227,7 +257,7 @@ async def root():
     """Service information endpoint."""
     return {
         "service": "Ultra-Secure Media Encoding Server",
-        "version": "2.0.0-secure",
+        "version": "2.1.0-secure",
         "author": "Lorenzo Albanese (alblor)",
         "security_level": "zero-trust",
         "encryption_modes": ["automated", "manual"],
@@ -748,8 +778,8 @@ async def get_endpoint_documentation(endpoint_id: str):
                         "message": f"Documentation for endpoint '{endpoint_id}' not found",
                         "type": "not_found_error",
                         "available_endpoints": [
-                            "root", "health", "presets", "keypair",
-                            "submit_job", "job_status", "job_result", "list_jobs"
+                            entry["id"] for entry in
+                            app.state.documentation_manager.get_endpoints_list()["manpage"]["endpoints"]
                         ]
                     }
                 }

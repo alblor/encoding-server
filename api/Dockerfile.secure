@@ -8,6 +8,11 @@ FROM alpine:3.19
 RUN addgroup -g 1000 -S encodinguser && \
     adduser -u 1000 -S encodinguser -G encodinguser -h /home/encodinguser -s /bin/sh
 
+# Restoration: the GPU worker runs as group `restore` (gid 10001). The API user joins that group
+# so it can create and wipe job directories in the shared /restore-work volume (mode 0770).
+RUN addgroup -g 10001 -S restore && \
+    addgroup encodinguser restore
+
 # Security: Install essential packages with signature verification + AppArmor support
 RUN apk update --no-cache && \
     apk add --no-cache \
@@ -54,6 +59,7 @@ RUN pip3 install --user --no-cache-dir --break-system-packages -r requirements.t
 # Copy application code and tests (now from root context)
 COPY --chown=encodinguser:encodinguser api/app ./app
 COPY --chown=encodinguser:encodinguser api/main.py .
+COPY --chown=encodinguser:encodinguser restore_core ./restore_core
 COPY --chown=encodinguser:encodinguser tests ./tests
 
 # Security: Set restrictive file permissions

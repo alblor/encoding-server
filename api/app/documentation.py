@@ -6,9 +6,94 @@ Author: Lorenzo Albanese (alblor)
 Architecture: Frontend-ready structured documentation with real examples
 """
 
+import typing
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 import json
+
+from pydantic_core import PydanticUndefined
+
+from restore_core.recipe import Advanced, Basic, PRESETS, QUALITY_TABLE
+
+# ----------------------------------------------------------------------
+# Recipe reference, generated from restore_core.recipe so it cannot drift
+# ----------------------------------------------------------------------
+
+# Fields that can cost quality or speed, and why. The reasons come from the field descriptions
+# and the owner's tier rules; nothing here is measured.
+_RECIPE_COST_NOTES = {
+    "advanced.restore.precision": "unset uses the precision the worker runs (RESTORE_PRECISION, default bf16); fp8 is about 1.4x faster in the transformer at 46.8 dB against bf16, needs torch.compile, and its error grows along a segment",
+    "advanced.restore.tile_height / tile_width": "tile size in pixels at target size",
+    "advanced.restore.min_overlap": "a larger overlap hides seams and costs time",
+    "advanced.restore.decoder": "'wan' is slower and needs more memory than 'flashdecoder'",
+    "advanced.restore.scale": "overrides the scale factor derived from target_height",
+    "advanced.restore.segment_max_seconds": "bounds the RAM a worker needs for one piece",
+    "advanced.grain.mode": "'baked' works on every player and costs bitrate; 'av1_fgs' is cheap but needs a decoder that applies the signalled grain",
+    "advanced.fidelity.soften": "'adaptive' is luma only and a few percent of a second per 2160p frame on a GPU; it needs a source of the same size and is skipped otherwise, without a warning",
+    "advanced.fidelity.face_guard": "needs yunet.onnx next to the weights (scripts/stage_restore_weights.sh) and a same-size source; costs about 0.08 s per frame for the detection",
+    "advanced.tone.local_contrast / contrast": "an unset pivot is measured once per segment, so a gradual brightness change inside one shot can step slightly at a forced cut",
+    "advanced.encode.preset / crf": "a lower SVT-AV1 preset is slower and smaller; the defaults follow basic.quality",
+}
+
+
+def _field_type_name(annotation) -> str:
+    args = typing.get_args(annotation)
+    if typing.get_origin(annotation) is typing.Literal:
+        return "literal"
+    if typing.get_origin(annotation) is typing.Union:
+        inner = [a for a in args if a is not type(None)]
+        return _field_type_name(inner[0]) if len(inner) == 1 else "union"
+    return getattr(annotation, "__name__", str(annotation))
+
+
+def _field_rows(model) -> List[Dict[str, Any]]:
+    """One row per field: type, default, allowed values, bounds and description."""
+    rows = []
+    for name, field in model.model_fields.items():
+        annotation = field.annotation
+        if typing.get_origin(annotation) is typing.Union:
+            inner = [a for a in typing.get_args(annotation) if a is not type(None)]
+            annotation = inner[0] if len(inner) == 1 else annotation
+        row: Dict[str, Any] = {
+            "name": name,
+            "type": _field_type_name(field.annotation),
+            "default": None if field.default is PydanticUndefined else field.default,
+            "description": field.description or "",
+        }
+        if typing.get_origin(annotation) is typing.Literal:
+            row["values"] = list(typing.get_args(annotation))
+        bounds = []
+        for meta in field.metadata:
+            for attr in ("gt", "ge", "lt", "le", "multiple_of"):
+                value = getattr(meta, attr, None)
+                if value is not None:
+                    bounds.append(f"{attr}={value}")
+        row["constraints"] = ", ".join(bounds)
+        rows.append(row)
+    return rows
+
+
+def _recipe_tiers_docs() -> Dict[str, Any]:
+    """The three layers of the recipe: presets, basic block, advanced block."""
+    sections = {}
+    for name, field in Advanced.model_fields.items():
+        sections[name] = {"fields": _field_rows(field.annotation)}
+    return {
+        "presets": {name: spec["description"] for name, spec in PRESETS.items()},
+        "basic": {
+            "description": "The short list most users may touch. Every field has a default.",
+            "fields": _field_rows(Basic),
+        },
+        "advanced": {
+            "description": (
+                "Troubleshooting and optimisation. Optional, every field has a safe default, and every value is "
+                "validated and bounded: nothing is passed on as a string. Unknown keys are rejected."
+            ),
+            "sections": sections,
+            "can_cost_quality_or_speed": _RECIPE_COST_NOTES,
+        },
+        "encoder_defaults_by_quality": {q: {"svt_av1_preset": p, "crf": c} for q, (p, c) in QUALITY_TABLE.items()},
+    }
 
 
 class DocumentationManager:
@@ -20,7 +105,7 @@ class DocumentationManager:
     
     def __init__(self):
         """Initialize documentation manager with comprehensive content."""
-        self.version = "2.0.0-secure"
+        self.version = "2.1.0-secure"
         self.base_url = "http://localhost:8000"  # Will be configurable in production
         self.author = "Lorenzo Albanese (alblor)"
         
@@ -88,7 +173,9 @@ class DocumentationManager:
                 "health_check": f"{self.base_url}/health",
                 "service_info": f"{self.base_url}/",
                 "encoding_presets": f"{self.base_url}/v1/presets",
-                "job_submission": f"{self.base_url}/v1/jobs"
+                "job_submission": f"{self.base_url}/v1/jobs",
+                "restoration_presets": f"{self.base_url}/v1/restore/presets",
+                "restoration_capabilities": f"{self.base_url}/v1/restore/capabilities"
             }
         }
         
@@ -336,6 +423,62 @@ class DocumentationManager:
                     "method": "GET", 
                     "title": "List All Jobs",
                     "description": "List all processing jobs with basic information"
+                },
+                {
+                    "id": "restore_presets",
+                    "path": "/v1/restore/presets",
+                    "method": "GET",
+                    "title": "Restoration Presets",
+                    "description": "Restoration presets and the recipe each one resolves to"
+                },
+                {
+                    "id": "restore_resolve",
+                    "path": "/v1/restore/recipe/resolve",
+                    "method": "POST",
+                    "title": "Resolve Restoration Recipe",
+                    "description": "Validate a recipe and get the effective recipe back; documents the three tiers"
+                },
+                {
+                    "id": "restore_submit",
+                    "path": "/v1/restore/jobs",
+                    "method": "POST",
+                    "title": "Submit Restoration Job",
+                    "description": "Upload one video segment and queue it for restoration"
+                },
+                {
+                    "id": "restore_status",
+                    "path": "/v1/restore/jobs/{job_id}",
+                    "method": "GET",
+                    "title": "Restoration Job Status",
+                    "description": "Status, stage, progress and error of a restoration job"
+                },
+                {
+                    "id": "restore_download",
+                    "path": "/v1/restore/jobs/{job_id}/download",
+                    "method": "GET",
+                    "title": "Download Restoration Result",
+                    "description": "Download the restored segment, encrypted as the job's mode says"
+                },
+                {
+                    "id": "restore_cancel",
+                    "path": "/v1/restore/jobs/{job_id}/cancel",
+                    "method": "POST",
+                    "title": "Cancel Restoration Job",
+                    "description": "Stop a queued or running restoration job"
+                },
+                {
+                    "id": "restore_delete",
+                    "path": "/v1/restore/jobs/{job_id}",
+                    "method": "DELETE",
+                    "title": "Delete Restoration Job",
+                    "description": "Wipe a restoration job's files and keys"
+                },
+                {
+                    "id": "restore_capabilities",
+                    "path": "/v1/restore/capabilities",
+                    "method": "GET",
+                    "title": "Restoration Capabilities",
+                    "description": "Engines the attached workers offer, queue length, workers alive"
                 }
             ],
             "usage": {
@@ -358,7 +501,15 @@ class DocumentationManager:
             "job_status": self._get_job_status_endpoint_docs(),
             "job_result": self._get_job_result_endpoint_docs(),
             "cancel_job": self._get_cancel_job_endpoint_docs(),
-            "list_jobs": self._get_list_jobs_endpoint_docs()
+            "list_jobs": self._get_list_jobs_endpoint_docs(),
+            "restore_presets": self._get_restore_presets_endpoint_docs(),
+            "restore_resolve": self._get_restore_resolve_endpoint_docs(),
+            "restore_submit": self._get_restore_submit_endpoint_docs(),
+            "restore_status": self._get_restore_status_endpoint_docs(),
+            "restore_download": self._get_restore_download_endpoint_docs(),
+            "restore_cancel": self._get_restore_cancel_endpoint_docs(),
+            "restore_delete": self._get_restore_delete_endpoint_docs(),
+            "restore_capabilities": self._get_restore_capabilities_endpoint_docs()
         }
         
         return endpoints.get(endpoint_id)
@@ -384,7 +535,7 @@ class DocumentationManager:
                     "description": "Service information retrieved successfully",
                     "content": {
                         "service": "Ultra-Secure Media Encoding Server",
-                        "version": "2.0.0-secure",
+                        "version": "2.1.0-secure",
                         "author": "Lorenzo Albanese (alblor)",
                         "security_level": "zero-trust",
                         "encryption_modes": ["automated", "manual"],
@@ -406,7 +557,7 @@ class DocumentationManager:
                     "request": f"curl -X GET {self.base_url}/",
                     "response_preview": {
                         "service": "Ultra-Secure Media Encoding Server",
-                        "version": "2.0.0-secure",
+                        "version": "2.1.0-secure",
                         "author": "Lorenzo Albanese (alblor)"
                     }
                 }
@@ -1052,6 +1203,294 @@ class DocumentationManager:
         
         return response
     
+    # ------------------------------------------------------------------
+    # Restoration endpoints (/v1/restore)
+    # ------------------------------------------------------------------
+
+    def _restore_common(self, method: str, path: str, name_suffix: str = "") -> Dict[str, Any]:
+        """Fields every restoration manpage shares."""
+        return {
+            "name": f"{method} {path}",
+            "method": method,
+            "path": path,
+            "authentication": (
+                "None required, same as /v1/jobs. If you send X-API-Key, jobs are kept per key: another key "
+                "gets 404 for your job ids."
+            ),
+        }
+
+    def _get_restore_presets_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for GET /v1/restore/presets."""
+        response = self._create_response_template("endpoint", "Restoration Presets Endpoint")
+        response["manpage"] = {
+            **self._restore_common("GET", "/v1/restore/presets"),
+            "synopsis": "List the restoration presets and the full recipe each one resolves to",
+            "description": (
+                "A preset is a named starting point that fills the whole recipe. Most people only pick one. "
+                "Every entry here carries its description and the effective recipe, so you can see exactly "
+                "what a preset sets before you submit anything."
+            ),
+            "parameters": [],
+            "responses": {
+                "200": {
+                    "description": "All presets",
+                    "content": {"presets": {"draft": {"description": "...", "recipe": {"basic": "...", "advanced": "..."}}}},
+                }
+            },
+            "examples": [{"title": "List presets", "request": f"curl -k {self.base_url}/v1/restore/presets"}],
+        }
+        return response
+
+    def _get_restore_resolve_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for POST /v1/restore/recipe/resolve, which also holds the recipe reference."""
+        response = self._create_response_template("endpoint", "Resolve Restoration Recipe Endpoint")
+        response["manpage"] = {
+            **self._restore_common("POST", "/v1/restore/recipe/resolve"),
+            "synopsis": "Check a recipe and get back the effective recipe, nothing is queued",
+            "description": (
+                "Send a RecipeRequest (a preset and/or overrides) and get the EffectiveRecipe: every field "
+                "filled in, which is exactly what a job runs with. Unknown keys are rejected at every level, "
+                "so a typo never falls back to a default silently. The recipe has three layers, listed in "
+                "recipe_tiers below: presets, the basic block and the advanced block."
+            ),
+            "content_type": "application/json",
+            "parameters": [
+                {"name": "recipe_version", "type": "integer", "required": False, "default": 1, "values": [1],
+                 "description": "Version of the recipe schema"},
+                {"name": "preset", "type": "string", "required": False, "values": sorted(PRESETS),
+                 "description": "Preset to start from"},
+                {"name": "basic", "type": "object", "required": False,
+                 "description": "Overrides for the basic block (see recipe_tiers.basic)"},
+                {"name": "advanced", "type": "object", "required": False,
+                 "description": "Overrides for the advanced block (see recipe_tiers.advanced)"},
+            ],
+            "recipe_tiers": _recipe_tiers_docs(),
+            "responses": {
+                "200": {"description": "The effective recipe", "content": {"effective_recipe": {"recipe_version": 1,
+                        "preset": "draft", "basic": "...", "advanced": "..."}}},
+                "400": {"description": "The body is not valid JSON, or is nested too deeply"},
+                "413": {"description": "The body is larger than 65536 bytes"},
+                "422": {"description": "The recipe is invalid. The message names the field and the reason.",
+                        "examples": ["unknown preset 'x'; available: ...", "basic.target_height: Input should be less than or equal to 4320"]},
+            },
+            "examples": [
+                {"title": "A preset with one override",
+                 "request": (f'curl -k -X POST {self.base_url}/v1/restore/recipe/resolve \\\n'
+                             '  -H "Content-Type: application/json" \\\n'
+                             '  -d \'{"preset":"film-restoration","basic":{"quality":"maximum"}}\'')},
+                {"title": "An advanced override",
+                 "request": (f'curl -k -X POST {self.base_url}/v1/restore/recipe/resolve \\\n'
+                             '  -H "Content-Type: application/json" \\\n'
+                             '  -d \'{"preset":"film-restoration","advanced":{"restore":{"tile_height":1024}}}\'')},
+            ],
+            "workflow_notes": [
+                "A request with only a preset, or only the basic block, is valid",
+                "The same validation runs when you submit a job, so resolve first if you want to see the result",
+            ],
+        }
+        return response
+
+    def _get_restore_submit_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for POST /v1/restore/jobs."""
+        response = self._create_response_template("endpoint", "Submit Restoration Job Endpoint")
+        response["manpage"] = {
+            **self._restore_common("POST", "/v1/restore/jobs"),
+            "synopsis": "Upload one video segment and queue it for restoration",
+            "description": (
+                "A job is one segment of a film: a few seconds of picture, cut by the client on a scene change. "
+                "The API checks the recipe, takes the upload into RAM, decrypts it according to the encryption "
+                "mode, inspects it with ffprobe and queues it for the GPU worker. The mode comes from the recipe "
+                "(basic.encryption): automated and manual mean the same as for /v1/jobs, off skips the crypto "
+                "layer only (the media still lives in RAM only and is wiped when the job is deleted). "
+                "The worker always sees plain video and never a key. The segment has to be Matroska or MP4 with "
+                "exactly one video stream; any audio and subtitle streams are allowed."
+            ),
+            "content_type": "multipart/form-data",
+            "parameters": [
+                {"name": "file", "type": "file", "required": True,
+                 "description": "The segment. Plain video for automated and off, a password-encrypted file for manual. "
+                                "The file name you send is ignored."},
+                {"name": "recipe", "type": "string (JSON)", "required": True,
+                 "description": "A RecipeRequest, for example {\"preset\":\"film-restoration\"}. See POST /v1/restore/recipe/resolve."},
+                {"name": "first_frame", "type": "integer", "required": False, "default": 0,
+                 "description": "Absolute index of the segment's first frame in the film. It seeds the grain so cuts do not show."},
+                {"name": "segment_index", "type": "integer", "required": False, "default": 0,
+                 "description": "Position of the segment in the film, informational"},
+                {"name": "decryption_password", "type": "string", "required": False,
+                 "description": "Required when the recipe says manual encryption, ignored otherwise. Up to 1024 characters. "
+                                "It is kept wrapped by the server key until the job is deleted, and is used to encrypt the result."},
+            ],
+            "limits": {
+                "max_segment_mb": "RESTORE_MAX_SEGMENT_MB, default 2048",
+                "max_frames": "RESTORE_MAX_SEGMENT_FRAMES, default 400",
+                "max_pixels": "RESTORE_MAX_PIXELS, default 8847360 (3840x2304)",
+                "max_stored_jobs": "RESTORE_MAX_JOBS, default 64",
+                "content_length": "Required. Chunked uploads without a length are refused with 411.",
+            },
+            "responses": {
+                "200": {"description": "Job queued",
+                        "content": {"job_id": "9f2c1c0e5b7a4d3e8a6f0b1c2d3e4f50", "status": "queued", "encryption": "automated",
+                                    "recipe": "the effective recipe", "input": {"bytes": 52428800, "width": 1920, "height": 1080, "frames": 240},
+                                    "submitted_at": "2026-10-30T12:00:00+00:00",
+                                    "warning": "only present when no running worker offers the requested engine"}},
+                "400": {"description": "Manual mode without decryption_password, or an over-long password"},
+                "411": {"description": "No Content-Length header"},
+                "413": {"description": "The upload is over the byte limit"},
+                "422": {"description": "Invalid recipe, or the content was rejected (not Matroska or MP4, not exactly one "
+                                       "video stream, too many frames, too large a frame, wrong password), or the engine "
+                                       "is not available (sparkvsr has no queue). Nothing is kept."},
+                "500": {"description": "The restoration volume is not set up correctly for the API (job directory or worker group)"},
+                "429": {"description": "Too many jobs are stored: delete finished ones"},
+                "503": {"description": "The shared volume or ffprobe is not available"},
+                "507": {"description": "Not enough free space on the restoration volume"},
+            },
+            "examples": [
+                {"title": "Automated mode with a preset",
+                 "request": (f'curl -k -X POST {self.base_url}/v1/restore/jobs \\\n'
+                             '  -F "file=@segment_0007.mkv" \\\n'
+                             '  -F \'recipe={"preset":"film-restoration"}\' \\\n'
+                             '  -F "first_frame=1680" -F "segment_index=7"')},
+                {"title": "Manual mode",
+                 "preparation": "python encrypt_media.py segment_0007.mkv segment_0007.enc mypassword",
+                 "request": (f'curl -k -X POST {self.base_url}/v1/restore/jobs \\\n'
+                             '  -F "file=@segment_0007.enc" \\\n'
+                             '  -F \'recipe={"preset":"film-restoration","basic":{"encryption":"manual"}}\' \\\n'
+                             '  -F "decryption_password=mypassword"')},
+            ],
+            "workflow_notes": [
+                "Poll GET /v1/restore/jobs/{job_id}, download when the status is done, then DELETE the job",
+                "Check GET /v1/restore/capabilities first: with no worker running, jobs wait in the queue",
+                "Jobs and their files are wiped 24 hours after they finish, whether you downloaded them or not",
+                "A running job whose worker stops reporting for 15 minutes (RESTORE_STALE_SECONDS) is failed with "
+                "'the worker stopped responding', and a job that waits in the queue for 24 hours "
+                "(RESTORE_QUEUE_MAX_SECONDS) is failed with 'expired in the queue'",
+            ],
+        }
+        return response
+
+    def _get_restore_status_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for GET /v1/restore/jobs/{job_id}."""
+        response = self._create_response_template("endpoint", "Restoration Job Status Endpoint")
+        response["manpage"] = {
+            **self._restore_common("GET", "/v1/restore/jobs/{job_id}"),
+            "synopsis": "Status, stage, progress and error of a restoration job",
+            "description": (
+                "Status is one of queued, running, done, failed, cancelled. While running, stage is decode, "
+                "restore or encode and progress goes from 0.0 to 1.0 over the whole job. When done, result holds "
+                "the frames, size, seconds and the size of the file you can download. A job that is not yours, "
+                "or does not exist, answers 404."
+            ),
+            "parameters": [{"name": "job_id", "type": "string", "required": True, "location": "path",
+                            "description": "The 32 character id returned at submission"}],
+            "responses": {
+                "200": {"description": "Job state",
+                        "content": {"job_id": "9f2c...", "status": "running", "stage": "restore", "progress": 0.42,
+                                    "error": "", "encryption": "automated", "recipe": "the effective recipe",
+                                    "result": "only when done: frames, width, height, seconds, bytes"}},
+                "404": {"description": "Unknown job id, or not yours"},
+            },
+            "examples": [{"title": "Poll a job", "request": f"curl -k {self.base_url}/v1/restore/jobs/<job_id>"}],
+        }
+        return response
+
+    def _get_restore_download_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for GET /v1/restore/jobs/{job_id}/download."""
+        response = self._create_response_template("endpoint", "Download Restoration Result Endpoint")
+        response["manpage"] = {
+            **self._restore_common("GET", "/v1/restore/jobs/{job_id}/download"),
+            "synopsis": "Download the restored segment, encrypted as the job's mode says",
+            "description": (
+                "Only works when the status is done (409 otherwise). In automated and off mode you get the "
+                "Matroska file as it is, over TLS, the way /v1/jobs does it. In manual mode the file is encrypted "
+                "with the password you sent at submission, in the same format encrypt_media.py writes, so "
+                "decrypt_media.py opens it. The name in Content-Disposition is fixed: restored.mkv, or "
+                "restored.mkv.enc in manual mode."
+            ),
+            "parameters": [{"name": "job_id", "type": "string", "required": True, "location": "path",
+                            "description": "The 32 character id returned at submission"}],
+            "responses": {
+                "200": {"description": "The file, streamed, with Content-Length"},
+                "404": {"description": "Unknown job id, not yours, or the result is gone"},
+                "409": {"description": "The job is not done yet (or ended as failed or cancelled)"},
+            },
+            "examples": [{"title": "Download",
+                          "request": f"curl -k -o restored.mkv {self.base_url}/v1/restore/jobs/<job_id>/download"}],
+        }
+        return response
+
+    def _get_restore_cancel_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for POST /v1/restore/jobs/{job_id}/cancel."""
+        response = self._create_response_template("endpoint", "Cancel Restoration Job Endpoint")
+        response["manpage"] = {
+            **self._restore_common("POST", "/v1/restore/jobs/{job_id}/cancel"),
+            "synopsis": "Stop a queued or running restoration job",
+            "description": (
+                "A queued job is taken off the queue, marked cancelled and its files are wiped at once. A running "
+                "job is told to stop: the answer still says running with cancelling set to true, the worker stops "
+                "between chunks and sets cancelled, and the files are wiped then. Calling it again, or on a job "
+                "that already ended, is harmless and returns the job as it is."
+            ),
+            "parameters": [{"name": "job_id", "type": "string", "required": True, "location": "path",
+                            "description": "The 32 character id returned at submission"}],
+            "responses": {
+                "200": {"description": "The job state after the request"},
+                "404": {"description": "Unknown job id, or not yours"},
+            },
+            "examples": [{"title": "Cancel", "request": f"curl -k -X POST {self.base_url}/v1/restore/jobs/<job_id>/cancel"}],
+        }
+        return response
+
+    def _get_restore_delete_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for DELETE /v1/restore/jobs/{job_id}."""
+        response = self._create_response_template("endpoint", "Delete Restoration Job Endpoint")
+        response["manpage"] = {
+            **self._restore_common("DELETE", "/v1/restore/jobs/{job_id}"),
+            "synopsis": "Wipe a job's files and keys",
+            "description": (
+                "Overwrites then deletes every file of the job, and removes its Redis keys and the stored "
+                "password. Do this once you have your result. A job that is still running is told to stop and is "
+                "wiped as soon as it does (202, deleted false). Deleting a job that is already gone answers 404, "
+                "which you can treat as done."
+            ),
+            "parameters": [{"name": "job_id", "type": "string", "required": True, "location": "path",
+                            "description": "The 32 character id returned at submission"}],
+            "responses": {
+                "200": {"description": "Deleted", "content": {"job_id": "9f2c...", "deleted": True}},
+                "202": {"description": "The job is running: it will be deleted when it stops",
+                        "content": {"job_id": "9f2c...", "deleted": False, "status": "running"}},
+                "404": {"description": "Unknown job id, not yours, or already deleted"},
+            },
+            "examples": [{"title": "Delete", "request": f"curl -k -X DELETE {self.base_url}/v1/restore/jobs/<job_id>"}],
+        }
+        return response
+
+    def _get_restore_capabilities_endpoint_docs(self) -> Dict[str, Any]:
+        """Documentation for GET /v1/restore/capabilities."""
+        response = self._create_response_template("endpoint", "Restoration Capabilities Endpoint")
+        response["manpage"] = {
+            **self._restore_common("GET", "/v1/restore/capabilities"),
+            "synopsis": "Which engines the attached workers can run, and how long the queue is",
+            "description": (
+                "Workers register themselves in Redis with an entry that lives 60 seconds and renew it while they run, "
+                "so this lists the workers seen in the last minute. Engines are none (re-encode only), classical "
+                "(CPU) and recavsr (GPU). With no worker alive, available is false and the message says so: "
+                "jobs are still accepted and wait in the queue until a worker starts. There is one queue per "
+                "engine, so a worker only ever takes jobs for the engines it offers: queue_length is the sum "
+                "and queues gives the length of each."
+            ),
+            "parameters": [],
+            "responses": {
+                "200": {"description": "Capabilities",
+                        "content": {"available": True, "message": "1 worker(s) running.",
+                                    "engines": ["classical", "none", "recavsr"], "queue_length": 0, "queues": {"recavsr": 0, "classical": 0, "none": 0},
+                                    "workers": [{"name": "gpu0", "engines": ["classical", "none", "recavsr"],
+                                                 "device": "cuda:0", "last_seen": "2026-10-30T12:00:00+00:00"}],
+                                    "limits": {"max_segment_mb": 2048, "max_frames": 400, "max_pixels": 8847360}}},
+            },
+            "examples": [{"title": "Check before submitting", "request": f"curl -k {self.base_url}/v1/restore/capabilities"}],
+        }
+        return response
+
     def get_authentication_guide(self) -> Dict[str, Any]:
         """Get authentication and API key management guide."""
         response = self._create_response_template("auth", "Authentication Guide")

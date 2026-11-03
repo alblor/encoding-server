@@ -24,7 +24,8 @@ if [ "$(id -u)" = "0" ]; then
     log "INIT: Created secure secrets directory: $SECURE_SECRETS_DIR"
     
     # Define required secrets
-    REQUIRED_SECRETS="jwt_secret encryption_master_key redis_password api_master_key"
+    # restore_worker_redis_password is not used by the API: it is copied here so that `secret-restore` can hand it back to the host
+    REQUIRED_SECRETS="jwt_secret encryption_master_key redis_password api_master_key restore_worker_redis_password"
     COPIED_COUNT=0
     FAILED_COUNT=0
     
@@ -99,7 +100,7 @@ if [ "$(id -u)" = "0" ]; then
     # Check if su-exec is available (Alpine Linux)
     if command -v su-exec >/dev/null 2>&1; then
         log "INIT: Dropping privileges to user 1000 using su-exec..."
-        exec su-exec 1000:1000 "$0" "$@"
+        exec su-exec 1000 "$0" "$@"
     else
         # Fallback to su (less secure but compatible)
         log "INIT: Dropping privileges to user 1000 using su..."

@@ -5,6 +5,20 @@ import os
 from typing import List, Optional
 from .secret_manager import get_secret_manager, SecretNotFoundError
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    """Read an integer setting from the environment. A malformed or too small value stops startup."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise RuntimeError(f"Configuration error: {name} must be an integer")
+    if value < minimum:
+        raise RuntimeError(f"Configuration error: {name} must be at least {minimum}")
+    return value
+
+
 class Settings:
     def __init__(self):
         """Initialize settings with SecretManager integration."""
@@ -57,6 +71,21 @@ class Settings:
         
         # Encryption configuration (non-sensitive)
         self.ENCRYPTION_MODE: str = os.getenv("ENCRYPTION_MODE", "dual")  # "automated", "manual", "dual"
+
+        # Restoration pipeline (non-sensitive). See rules/restore-job-protocol.md.
+        self.RESTORE_WORK_DIR: str = os.getenv("RESTORE_WORK_DIR", "/restore-work")
+        self.RESTORE_WORKER_GID: int = _env_int("RESTORE_WORKER_GID", 10001, minimum=1)
+        self.RESTORE_MAX_SEGMENT_MB: int = _env_int("RESTORE_MAX_SEGMENT_MB", 2048)
+        self.RESTORE_MAX_SEGMENT_FRAMES: int = _env_int("RESTORE_MAX_SEGMENT_FRAMES", 400)
+        self.RESTORE_MAX_PIXELS: int = _env_int("RESTORE_MAX_PIXELS", 3840 * 2304)
+        self.RESTORE_MAX_JOBS: int = _env_int("RESTORE_MAX_JOBS", 64)
+        self.RESTORE_GPU_WORKER_MEMORY_MB: int = _env_int("RESTORE_GPU_WORKER_MEMORY_MB", 22528, minimum=1)
+        self.RESTORE_CPU_WORKER_MEMORY_MB: int = _env_int("RESTORE_CPU_WORKER_MEMORY_MB", 12288, minimum=1)
+        self.RESTORE_CLEANUP_INTERVAL_SECONDS: int = _env_int("RESTORE_CLEANUP_INTERVAL_SECONDS", 60)
+        self.RESTORE_STALE_SECONDS: int = _env_int("RESTORE_STALE_SECONDS", 900)
+        self.RESTORE_QUEUE_MAX_SECONDS: int = _env_int("RESTORE_QUEUE_MAX_SECONDS", 86400)
+        self.RESTORE_WIPE_PASSES: int = _env_int("RESTORE_WIPE_PASSES", 3)
+        self.RESTORE_FFPROBE_PATH: str = os.getenv("RESTORE_FFPROBE_PATH", "ffprobe")
         
     def _get_secret_or_fail(self, secret_name: str) -> str:
         """
