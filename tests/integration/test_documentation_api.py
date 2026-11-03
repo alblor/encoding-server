@@ -8,6 +8,7 @@ Test Coverage: Complete documentation system validation
 """
 
 import json
+import re
 import sys
 import time
 from datetime import datetime
@@ -92,7 +93,7 @@ class DocumentationAPITester:
             return False, f"Missing manpage fields: {', '.join(missing_manpage)}"
         
         # Validate version format
-        if not response_data["version"].startswith("2.0.0"):
+        if not re.match(r"^2\.\d+\.\d+-secure$", response_data["version"]):
             return False, f"Unexpected version format: {response_data['version']}"
         
         # Validate author
@@ -764,6 +765,53 @@ class DocumentationAPITester:
         except Exception as e:
             self.log_test("Client Tools Documentation", False, f"Exception: {str(e)}")
     
+    def test_restore_documentation(self):
+        """The restoration endpoints (/v1/restore) and the three recipe tiers are documented."""
+        expected = {
+            "restore_presets": ("GET", "/v1/restore/presets"),
+            "restore_resolve": ("POST", "/v1/restore/recipe/resolve"),
+            "restore_submit": ("POST", "/v1/restore/jobs"),
+            "restore_status": ("GET", "/v1/restore/jobs/{job_id}"),
+            "restore_download": ("GET", "/v1/restore/jobs/{job_id}/download"),
+            "restore_cancel": ("POST", "/v1/restore/jobs/{job_id}/cancel"),
+            "restore_delete": ("DELETE", "/v1/restore/jobs/{job_id}"),
+            "restore_capabilities": ("GET", "/v1/restore/capabilities"),
+        }
+        try:
+            listing = requests.get(f"{self.base_url}/v1/docs/endpoints", timeout=10, verify=False).json()
+            listed = {e.get("id"): e for e in listing["manpage"]["endpoints"]}
+            for endpoint_id, (method, path) in expected.items():
+                if endpoint_id not in listed:
+                    self.log_test(f"Restore Doc ({endpoint_id})", False, "Missing from the endpoints list")
+                    continue
+                response = requests.get(f"{self.base_url}/v1/docs/endpoints/{endpoint_id}", timeout=10, verify=False)
+                manpage = response.json().get("manpage", {}) if response.status_code == 200 else {}
+                if manpage.get("method") == method and manpage.get("path") == path and "parameters" in manpage:
+                    self.log_test(f"Restore Doc ({endpoint_id})", True, f"Documents {method} {path}")
+                else:
+                    self.log_test(f"Restore Doc ({endpoint_id})", False,
+                                  f"Status {response.status_code} or wrong method/path/parameters")
+
+            resolve = requests.get(f"{self.base_url}/v1/docs/endpoints/restore_resolve", timeout=10, verify=False).json()
+            tiers = resolve.get("manpage", {}).get("recipe_tiers", {})
+            has_tiers = (
+                bool(tiers.get("presets"))
+                and bool(tiers.get("basic", {}).get("fields"))
+                and bool(tiers.get("advanced", {}).get("sections"))
+            )
+            fields_described = has_tiers and all(
+                f.get("description") for f in tiers["basic"]["fields"]
+            ) and all(
+                f.get("description")
+                for section in tiers["advanced"]["sections"].values()
+                for f in section["fields"]
+            )
+            self.log_test("Restore Recipe Tiers", bool(fields_described),
+                          "Presets, basic and advanced documented, every field described" if fields_described
+                          else "Missing tier or undescribed field")
+        except Exception as e:
+            self.log_test("Restore Documentation", False, f"Exception: {str(e)}")
+
     def run_all_tests(self):
         """Execute all documentation API tests."""
         print("🔒 Starting Comprehensive Documentation API Test Suite")
@@ -780,6 +828,9 @@ class DocumentationAPITester:
         # Run tests for all discovered endpoints using generic testing
         for endpoint in self.discovered_endpoints:
             self.test_documentation_endpoint_generic(endpoint)
+        
+        # Restoration endpoints and recipe tiers
+        self.test_restore_documentation()
         
         # Calculate results
         total_tests = self.results["tests_passed"] + self.results["tests_failed"]
