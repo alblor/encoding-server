@@ -41,16 +41,28 @@ is_container_running() {
 
 # Function to create encrypted backup of secrets
 backup_secrets() {
+    # The secrets stay recoverable from the running container (restore), so a backup is optional. It needs a passphrase the
+    # owner keeps elsewhere (a file named by SECRET_BACKUP_PASSPHRASE_FILE, so it never shows in the process list). The old
+    # code encrypted with a random passphrase it threw away: an archive nobody could open, and the passphrase visible in ps.
+    if [[ -z "${SECRET_BACKUP_PASSPHRASE_FILE:-}" ]]; then
+        print_color $YELLOW "ℹ️  SECRET_BACKUP_PASSPHRASE_FILE is not set: no backup made (the secrets stay recoverable from the running container)"
+        return 0
+    fi
+    if [[ ! -r "$SECRET_BACKUP_PASSPHRASE_FILE" ]]; then
+        print_color $RED "❌ Cannot read SECRET_BACKUP_PASSPHRASE_FILE: nothing was shredded"
+        exit 1
+    fi
+
     local timestamp=$(date +%s)
     local backup_file="${BACKUP_DIR}/secrets-${timestamp}.tar.gz"
-    
+
     # Create backup directory if it doesn't exist
     mkdir -p "$BACKUP_DIR"
-    
-    # Create encrypted backup
-    tar czf - "$SECRETS_DIR" 2>/dev/null | \
-        openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 -out "$backup_file" -pass pass:"$(openssl rand -base64 32)"
-    
+
+    # Create encrypted backup (owner-only permissions from the first byte)
+    (umask 077; tar czf - "$SECRETS_DIR" 2>/dev/null | \
+        openssl enc -aes-256-cbc -salt -pbkdf2 -iter 100000 -out "$backup_file" -pass file:"$SECRET_BACKUP_PASSPHRASE_FILE")
+
     log "🔐 Created encrypted backup: $backup_file"
     return 0
 }
@@ -70,7 +82,7 @@ shred_secrets() {
     
     # Find and shred each secret file
     local shredded_count=0
-    local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key")
+    local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key" "restore_worker_redis_password")
     
     for secret in "${secret_files[@]}"; do
         local secret_file="$SECRETS_DIR/$secret"
@@ -79,7 +91,8 @@ shred_secrets() {
             # Securely shred the file
             shred -vfz -n 3 "$secret_file" 2>/dev/null || {
                 # Fallback for systems without shred
-                dd if=/dev/urandom of="$secret_file" bs=1 count=$(wc -c < "$secret_file") 2>/dev/null
+                # (BSD wc pads its count with spaces, which would break dd's count=)
+                dd if=/dev/urandom of="$secret_file" bs=1 count="$(wc -c < "$secret_file" | tr -d ' ')" 2>/dev/null
                 rm -f "$secret_file"
             }
             
@@ -89,7 +102,7 @@ shred_secrets() {
             echo "CONTAINER: $CONTAINER_NAME" >> "$secret_file"
             
             chmod 600 "$secret_file"
-            ((shredded_count++))
+            shredded_count=$((shredded_count + 1))
             log "🔥 Shredded: $secret"
         fi
     done
@@ -120,7 +133,7 @@ restore_secrets() {
             
             # Restore each secret file
             local restored_count=0
-            local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key")
+            local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key" "restore_worker_redis_password")
             
             for secret in "${secret_files[@]}"; do
                 local temp_secret="$temp_dir/$secret"
@@ -130,7 +143,7 @@ restore_secrets() {
                     # Copy secret back to host
                     cp "$temp_secret" "$host_secret"
                     chmod 600 "$host_secret"
-                    ((restored_count++))
+                    restored_count=$((restored_count + 1))
                     log "📥 Restored: $secret"
                 fi
             done
@@ -171,7 +184,7 @@ check_status() {
     
     local shredded_count=0
     local active_count=0
-    local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key")
+    local secret_files=("jwt_secret" "encryption_master_key" "redis_password" "api_master_key" "restore_worker_redis_password")
     
     echo "┌─────────────────────────────────────────────────────────────┐"
     echo "│                    SECRET LIFECYCLE STATUS                  │"
@@ -183,10 +196,10 @@ check_status() {
         if [[ -f "$secret_file" ]]; then
             if grep -q "$SHRED_MARKER" "$secret_file" 2>/dev/null; then
                 printf "│ %-25s │ %s │\n" "$secret" "🔥 SHREDDED (secure)"
-                ((shredded_count++))
+                shredded_count=$((shredded_count + 1))
             else
                 printf "│ %-25s │ %s │\n" "$secret" "📄 ON DISK (exposed)"
-                ((active_count++))
+                active_count=$((active_count + 1))
             fi
         else
             printf "│ %-25s │ %s │\n" "$secret" "❌ MISSING"
@@ -195,11 +208,11 @@ check_status() {
     
     echo "├─────────────────────────────────────────────────────────────┤"
     printf "│ %-25s │ %-29s │\n" "Container Status" "$(is_container_running && echo "🟢 RUNNING" || echo "🔴 STOPPED")"
-    printf "│ %-25s │ %-29s │\n" "Security Mode" "$([[ $shredded_count -eq 4 ]] && echo "🔒 MAXIMUM (memory-only)" || echo "⚠️  STANDARD (disk-exposed)")"
-    printf "│ %-25s │ %-29s │\n" "Attack Surface" "$([[ $shredded_count -eq 4 ]] && echo "📉 MINIMAL (99% reduced)" || echo "📈 ELEVATED")"
+    printf "│ %-25s │ %-29s │\n" "Security Mode" "$([[ $shredded_count -eq ${#secret_files[@]} ]] && echo "🔒 MAXIMUM (memory-only)" || echo "⚠️  STANDARD (disk-exposed)")"
+    printf "│ %-25s │ %-29s │\n" "Attack Surface" "$([[ $shredded_count -eq ${#secret_files[@]} ]] && echo "📉 MINIMAL (99% reduced)" || echo "📈 ELEVATED")"
     echo "└─────────────────────────────────────────────────────────────┘"
     
-    if [[ $shredded_count -eq 4 && $(is_container_running && echo "true" || echo "false") == "true" ]]; then
+    if [[ $shredded_count -eq ${#secret_files[@]} && $(is_container_running && echo "true" || echo "false") == "true" ]]; then
         print_color $GREEN "✅ OPTIMAL SECURITY: Secrets exist only in container memory"
     elif [[ $active_count -gt 0 ]]; then
         print_color $YELLOW "⚠️  SECURITY WARNING: $active_count secrets exposed on disk"
